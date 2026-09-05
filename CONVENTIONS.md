@@ -50,8 +50,12 @@ it, not just this one.
 | `HF_TOKEN` | *(unset)* | Hugging Face access token, needed for gated repos. Falls back to the token file below. The Hub works anonymously at a lower rate limit. |
 | `HF_TOKEN_PATH` | `$HF_HOME/token` | Where to read the token from when `HF_TOKEN` is unset — the file `hf auth login` writes. |
 | `LLAMA_CACHE` | `~/.cache/llama.cpp` | llama.cpp's own GGUF store, and the tree bind-mounted into the container. The variable llama.cpp actually reads. |
-| `MODEL_STORE` | `$LLAMA_CACHE/<repo>` | This model's subtree of the store. Must stay under `LLAMA_CACHE` or the bind mount cannot reach it; `start.sh` asserts this. |
-| `MODEL_ROOT` | `$MODEL_STORE/<QUANT>-<rev12>` | The exact revision+quantization directory holding the shards. |
+| `MODEL_STORE` | `$LLAMA_CACHE/<repo>` | *(llama.cpp recipes)* This model's subtree of the store. Must stay under `LLAMA_CACHE` or the bind mount cannot reach it; `start.sh` asserts this. |
+| `MODEL_ROOT` | `$MODEL_STORE/<QUANT>-<rev12>` | *(llama.cpp recipes)* The exact revision+quantization directory holding the shards. |
+| `MODEL_REVISION` | recipe-specific | Pinned Hub commit. Recipes resolve exactly this snapshot rather than whichever one is on disk. |
+| `VLLM_CACHE_HOST` | `~/.cache/vllm` | *(vLLM recipes)* Host side of vLLM's cache root — torch.compile cache, and any packed table a model builds. Mounted onto `/root/.cache/vllm`, the in-container default. Natively, vLLM reads `VLLM_CACHE_ROOT`. |
+| `FLASHINFER_CACHE_HOST` | `~/.cache/flashinfer` | *(vLLM recipes)* Mounted onto `/root/.cache/flashinfer`. Natively, flashinfer reads `FLASHINFER_WORKSPACE_BASE` (base is `~`). |
+| `TRITON_CACHE_HOST` | `~/.triton` | *(vLLM recipes)* The whole `.triton` tree, not just `cache/`, so triton's own sub-layout applies inside. Natively, triton reads `TRITON_CACHE_DIR`. |
 | `OUT_DIR` | `${XDG_STATE_HOME:-~/.local/state}/dgx-spark-recipes/<recipe>` | Bench results and verification stamps. Never inside the recipe directory. |
 | `XDG_STATE_HOME` | `~/.local/state` | Standard base for `OUT_DIR`; honored rather than assumed. |
 
@@ -125,3 +129,12 @@ generally do not fit. Recipes therefore:
 - claim a port and verify it is free before starting;
 - `mlock` weights so a load that does not fit fails outright rather than
   degrading into swap.
+
+On this hardware the CPU and GPU share one pool, so a runtime that sizes itself
+from "free GPU memory" is really reading `MemAvailable` — page cache included —
+and will happily take memory the OS and the NVIDIA driver still need. Exhausting
+the pool hangs the kernel: no OOM, no logs. A recipe whose runtime budgets
+itself that way must therefore cap its budget *from the host side* and leave an
+explicit reserve, rather than trusting a utilization fraction. See
+`Qwen3.8-Flash-Next-NVFP4-vLLM` for a worked example (`HOST_RESERVE_GIB`, a
+cgroup cap, and a memory watchdog).

@@ -13,6 +13,7 @@ were measured on the machine described there.
 | Recipe | Model | Runtime | Weights | Notes |
 |---|---|---|---|---|
 | [`Ling-3.0-flash-Fin-GGUF-llamacpp`](recipes/Ling-3.0-flash-Fin-GGUF-llamacpp/) | [inclusionAI/Ling-3.0-flash-Fin](https://huggingface.co/inclusionAI/Ling-3.0-flash-Fin) — `bailingmoe3`, 124B total / 5.1B active | llama.cpp `server-cuda` | GGUF, 57–72 GiB | Hybrid KDA + MLA attention; full 262,144 context at ~46 tok/s; MTP self-speculation, no draft model |
+| [`Qwen3.8-Flash-Next-NVFP4-vLLM`](recipes/Qwen3.8-Flash-Next-NVFP4-vLLM/) | [Mia-AiLab/Qwen3.8-Flash-Next-NVFP4](https://huggingface.co/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4) — multimodal, MXFP8 attention + NVFP4 PLE | vLLM `TP=1` | NVFP4, 98.66 GiB | PLE table memory-mapped off the GPU; 262K native / 524K via YaRN; 969,678 FP8 KV tokens, 27.1 tok/s decode. **AGPL**, see its README |
 
 ## Quick start
 
@@ -33,6 +34,21 @@ Or from the repo root, which runs preflight then start:
 ```bash
 ./scripts/run-ling-3.0-flash-fin-gguf.sh iq4xs
 ```
+
+Every recipe has the same shape, so the second one reads the same as the first:
+
+```bash
+cd dgx-spark-recipes/recipes/Qwen3.8-Flash-Next-NVFP4-vLLM
+
+./download.sh           # 98.66 GiB, pinned revision, checksum-verified
+./preflight.sh          # image contents, memory budget, GPU tenancy, port
+./start.sh              # serves on :8888
+./scripts/smoke.py
+```
+
+**One GPU, one pool.** These two recipes cannot run at the same time — each
+wants 60–90 GiB of a 121.7 GiB unified pool. Preflight refuses to start the
+second and names the container holding the memory.
 
 ## Requirements
 
@@ -93,4 +109,19 @@ server on loopback.
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE) for this repository, **except** where a recipe says otherwise.
+
+One recipe is licensed differently and cannot be otherwise:
+
+| Recipe | Licence | Copyright |
+|---|---|---|
+| [`Qwen3.8-Flash-Next-NVFP4-vLLM`](recipes/Qwen3.8-Flash-Next-NVFP4-vLLM/) | **AGPL-3.0-or-later** | © 2026 [MiaAI Lab](https://x.com/MiaAI_lab) (original), © 2026 amarjeet (port) |
+
+It is a port of [MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark)
+and carries upstream's code verbatim under `files/`, so AGPL §5(c) requires the
+derived work to stay AGPL. It ships its own `LICENSE` and documents the
+reasoning in [its README](recipes/Qwen3.8-Flash-Next-NVFP4-vLLM/README.md#license).
+
+MIT code may be incorporated into that recipe; its AGPL code may **not** be
+copied back into the MIT parts of this repository. Per AGPL §5, holding both in
+one repository is an aggregate and does not make the other recipes AGPL.

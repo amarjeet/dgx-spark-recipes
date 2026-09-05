@@ -1,0 +1,17 @@
+# Runtime state, written next to the recipe that produced it.
+.vllm.log
+.vllm.pid
+.profile.active
+
+# Generated at launch from the image's own sources: the .orig copies are
+# extracted from the container, the patched files are regenerated every run.
+files/*.orig
+files/ple_layer_patched.py
+files/modelopt_patched.py
+files/qsa_ops_patched.py
+files/qsa_nvidia_patched.py
+files/ple_offload/
+
+# Python
+__pycache__/
+*.py[cod]
