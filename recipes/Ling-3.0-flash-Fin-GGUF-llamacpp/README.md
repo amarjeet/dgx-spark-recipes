@@ -47,13 +47,36 @@ Sizes are the actual shard totals at pinned revision `a792b6bd51d2`.
 | **`iq4xs`** | **IQ4_XS** | **64.0 GiB** | **262,144** | **default — best quality per byte at 4 bits** |
 | `q4km` | Q4_K_M | 72.5 GiB | 65,536 | quality profile; raise ctx after measuring |
 
-Everything is env-overridable: `CTX_SIZE`, `PARALLEL`, `BATCH_SIZE`,
-`UBATCH_SIZE`, `PORT`, `SPEC_TYPE`, `MLOCK`, `RESTART_POLICY`, `TEMPERATURE`,
-`TOP_P`, `TOP_K`.
+Every path and tunable is env-overridable, with defaults chosen so the recipe is
+correct with no configuration. The ones you are most likely to touch:
+
+| Variable | Default | Means |
+|---|---|---|
+| `CTX_SIZE` | per profile | Context window — the largest single lever on memory use |
+| `PARALLEL` | `1` | Server slots; `CTX_SIZE` is divided across them |
+| `PORT` | `8008` | Listen port, published on all interfaces |
+| `HOST` | `0.0.0.0` | Bind address — set `127.0.0.1` to keep the server off the LAN |
+| `SPEC_TYPE` | `draft-mtp` | MTP speculative decoding; `none` disables it |
+| `MLOCK` | `1` | Lock weights in RAM, never swap; `0` to oversubscribe |
+| `BATCH_SIZE` / `UBATCH_SIZE` | `4096` / `2048` | Prefill batch sizes |
+| `TEMPERATURE` / `TOP_P` / `TOP_K` | `1.0` / `0.95` / `20` | Server-side sampling defaults |
+| `RESTART_POLICY` | `unless-stopped` | Docker restart policy; `no` for a one-off |
+| `LLAMA_CACHE` | `~/.cache/llama.cpp` | Where GGUF shards live and what is bind-mounted |
+| `OUT_DIR` | `${XDG_STATE_HOME:-~/.local/state}/dgx-spark-recipes/<recipe>` | Bench results, verify stamps |
+| `HF_TOKEN` | *(unset)* | Hub token; falls back to `~/.cache/huggingface/token` |
+| `FORCE_VERIFY` | `0` | `1` re-hashes the shards instead of trusting the stamp |
+| `IMAGE` | `ghcr.io/ggml-org/llama.cpp:server-cuda` | Runtime image |
+| `MIN_LLAMA_BUILD` | `10776` | Build floor `preflight.sh` enforces |
+
+The complete reference — including `MODEL_STORE`, `MODEL_ROOT`,
+`SERVED_MODEL_NAME`, `CONTAINER_NAME`, `MEM_HEADROOM_BYTES`,
+`DISK_RESERVE_BYTES` and `RETRIES` — is in
+[CONVENTIONS.md](../../CONVENTIONS.md#environment-variable-reference).
 
 ```bash
 CTX_SIZE=262144 ./start.sh iq4xs
 PARALLEL=4 CTX_SIZE=32768 ./start.sh q3kxl     # 4 slots x 32K
+HOST=127.0.0.1 ./start.sh iq4xs                # loopback only
 ```
 
 ## Measured
@@ -191,8 +214,11 @@ Two harmless things the runtime says that are worth recognising:
 
 ## Storage
 
-Nothing heavy lives in this directory — see
-[CONVENTIONS.md](../../CONVENTIONS.md) at the repo root.
+Nothing heavy lives in this directory. This recipe follows the **DGX Spark
+layout** — heavyweight reusable data lives once, at each tool's own standard
+default location. See [CONVENTIONS.md](../../CONVENTIONS.md) at the repo root,
+or the packaged skill
+[`dgx-spark-layout`](https://github.com/amarjeet/agent-skills/tree/main/skills/dgx-spark-layout).
 
 | What | Where | Override |
 |---|---|---|

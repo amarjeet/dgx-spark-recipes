@@ -35,6 +35,57 @@ The full version of this convention, including the native (non-Docker) case, is
 packaged as an agent skill:
 [`amarjeet/agent-skills` → `dgx-spark-layout`](https://github.com/amarjeet/agent-skills/tree/main/skills/dgx-spark-layout).
 
+## Environment variable reference
+
+Every variable below is optional — the default is what a recipe uses with no
+configuration. They fall into three groups, and the distinction matters:
+
+**Storage.** These decide where bytes land. Defaults are each tool's own
+standard location, so overriding one relocates data for every recipe that reads
+it, not just this one.
+
+| Variable | Default | Means |
+|---|---|---|
+| `HF_HOME` | `~/.cache/huggingface` | Root of the Hugging Face cache — hub downloads, datasets, xet. Read by the HF libraries themselves, not just by these recipes. |
+| `HF_TOKEN` | *(unset)* | Hugging Face access token, needed for gated repos. Falls back to the token file below. The Hub works anonymously at a lower rate limit. |
+| `HF_TOKEN_PATH` | `$HF_HOME/token` | Where to read the token from when `HF_TOKEN` is unset — the file `hf auth login` writes. |
+| `LLAMA_CACHE` | `~/.cache/llama.cpp` | llama.cpp's own GGUF store, and the tree bind-mounted into the container. The variable llama.cpp actually reads. |
+| `MODEL_STORE` | `$LLAMA_CACHE/<repo>` | This model's subtree of the store. Must stay under `LLAMA_CACHE` or the bind mount cannot reach it; `start.sh` asserts this. |
+| `MODEL_ROOT` | `$MODEL_STORE/<QUANT>-<rev12>` | The exact revision+quantization directory holding the shards. |
+| `OUT_DIR` | `${XDG_STATE_HOME:-~/.local/state}/dgx-spark-recipes/<recipe>` | Bench results and verification stamps. Never inside the recipe directory. |
+| `XDG_STATE_HOME` | `~/.local/state` | Standard base for `OUT_DIR`; honored rather than assumed. |
+
+**Runtime and serving.** These change how the server runs. Safe to set per
+invocation.
+
+| Variable | Default | Means |
+|---|---|---|
+| `PORT` | `8008` | Port the server listens on and publishes. `preflight.sh` verifies it is free. |
+| `HOST` | `0.0.0.0` | Bind address. **Set to `127.0.0.1` to keep the server off the LAN** — there is no API key. |
+| `IMAGE` | `ghcr.io/ggml-org/llama.cpp:server-cuda` | Container image. The tag is mutable, hence `MIN_LLAMA_BUILD`. |
+| `CONTAINER_NAME` | `<model>-gguf` | Docker container name. Change it to run two recipes of the same model side by side. |
+| `DEFAULT_PROFILE` | recipe-specific | Which quantization profile is used when none is named. |
+| `SERVED_MODEL_NAME` | `<model>-<quant>` | The `model` id clients send. Without it llama.cpp reports the full GGUF path. |
+| `CTX_SIZE` | per profile | Context window. The largest single lever on memory use. |
+| `PARALLEL` | `1` | Server slots. Total context is `CTX_SIZE`, divided across slots. |
+| `BATCH_SIZE` / `UBATCH_SIZE` | `4096` / `2048` | Prefill batch sizes. Lower them if a load fails on compute buffers. |
+| `SPEC_TYPE` | `draft-mtp` | Speculative decoding mode. `none` disables it — the first thing to try if the server exits at startup. |
+| `MLOCK` | `1` | Lock weights in RAM so they never reach swap. `0` opts out, allowing oversubscription. |
+| `RESTART_POLICY` | `unless-stopped` | Docker restart policy; survives reboot. `no` for a one-off run. |
+| `TEMPERATURE` / `TOP_P` / `TOP_K` | `1.0` / `0.95` / `20` | Server-side sampling defaults, so clients that send nothing still get the model card's recommendation. |
+
+**Preflight and tooling.** Thresholds and helper knobs.
+
+| Variable | Default | Means |
+|---|---|---|
+| `MIN_LLAMA_BUILD` | recipe-specific | Minimum llama.cpp build number. `preflight.sh` reads the real number out of the image and refuses to run below it, rather than trusting a mutable tag. |
+| `MEM_HEADROOM_BYTES` | `6 GiB` | Free memory demanded *on top of* the weights, for KV, compute buffers and the OS. A floor, not a budget. |
+| `DISK_RESERVE_BYTES` | `10 GiB` | Free disk demanded beyond the remaining download. |
+| `FORCE_VERIFY` | `0` | `1` re-runs the full SHA-256 pass. Normally verification is stamped by `(path, size, mtime)` so a restart does not re-hash tens of gigabytes. |
+| `RETRIES` | `20` | Download attempts before giving up. |
+| `SMOKE_HOST` | `127.0.0.1` | Host `scripts/smoke.py` targets. |
+| `BENCH_OUT` | *(unset)* | Default output path for `scripts/bench_depths.py`. |
+
 ## Recipe shape
 
 Each recipe is self-contained and driven by a single sourced config:

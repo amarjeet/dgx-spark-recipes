@@ -44,15 +44,36 @@ Or from the repo root, which runs preflight then start:
   `hf auth login`; recipes read the standard token file. The Hub works
   anonymously at a lower rate limit.
 
-## Where things are written
+## Storage: the DGX Spark layout
 
-Nothing heavy is written inside a recipe directory. Weights land in the tool's
-own standard cache and are shared across recipes; bench results and verification
-stamps go to a state directory. Every path is an environment-overridable
-variable whose default is the standard location.
+Every recipe here follows one storage convention, called the **DGX Spark
+layout**. In one sentence: *heavyweight reusable data lives exactly once, at
+each tool's own standard default location, and never inside a recipe
+directory.*
 
-See [CONVENTIONS.md](CONVENTIONS.md) for the full storage rules, the recipe
-layout, and the reasoning about sharing one GPU between servers.
+So a recipe directory holds code, config and manifests — a few hundred
+kilobytes. Model weights land in `~/.cache/llama.cpp`, the Hugging Face cache
+stays at `~/.cache/huggingface`, and both are shared with every other recipe on
+the host rather than downloaded per recipe. For Docker recipes the host cache is
+bind-mounted onto *the same path the tool defaults to inside the container*, so
+nothing needs a cache environment variable at all.
+
+Every path is an environment-overridable variable whose default is that standard
+location: the override makes a recipe portable, the default makes it correct
+with no setup. [CONVENTIONS.md](CONVENTIONS.md) has the full rules, the complete
+environment variable reference, and the reasoning about sharing one GPU between
+servers.
+
+The convention is also packaged as an agent skill, so a coding agent working in
+this repo applies it without being told:
+
+**[`amarjeet/agent-skills` → `dgx-spark-layout`](https://github.com/amarjeet/agent-skills/tree/main/skills/dgx-spark-layout)**
+— storage rules for serving recipes.
+**[`amarjeet/agent-skills` → `dgx-spark-training-layout`](https://github.com/amarjeet/agent-skills/tree/main/skills/dgx-spark-training-layout)**
+— the companion for fine-tuning runs.
+
+Install either by copying it into `.agents/skills/`, `.claude/skills/` or
+`.cursor/skills/`.
 
 ## Repository layout
 
