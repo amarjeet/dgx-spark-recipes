@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "repo": "bartowski/Ling-3.0-flash-Fin-GGUF",
+  "revision": "a792b6bd51d2cb47b5aa8687ff5dd4f2974acdb4",
+  "quantization": "IQ4_XS",
+  "total_bytes": 68739201632,
+  "reserve_bytes": 10737418240,
+  "files": [
+    {
+      "path": "Ling-3.0-flash-Fin-IQ4_XS/Ling-3.0-flash-Fin-IQ4_XS-00001-of-00002.gguf",
+      "bytes": 39935440288,
+      "sha256": "471abcec6df7d486ff73a90b881678fba0f9af5eca64b4f503d56d2c674e9f31"
+    },
+    {
+      "path": "Ling-3.0-flash-Fin-IQ4_XS/Ling-3.0-flash-Fin-IQ4_XS-00002-of-00002.gguf",
+      "bytes": 28803761344,
+      "sha256": "46eea04ce07ad3cfd81551878f748e7e186c4463517283f5e1dffc2f2c8af512"
+    }
+  ]
+}

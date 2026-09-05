@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "repo": "bartowski/Ling-3.0-flash-Fin-GGUF",
+  "revision": "a792b6bd51d2cb47b5aa8687ff5dd4f2974acdb4",
+  "quantization": "Q4_K_M",
+  "total_bytes": 77804990560,
+  "reserve_bytes": 10737418240,
+  "files": [
+    {
+      "path": "Ling-3.0-flash-Fin-Q4_K_M/Ling-3.0-flash-Fin-Q4_K_M-00001-of-00002.gguf",
+      "bytes": 39587396832,
+      "sha256": "776aa95c5f76b27b7b3d13ce6ffd3edd194b550112cdbe04d9f27e9335c6780c"
+    },
+    {
+      "path": "Ling-3.0-flash-Fin-Q4_K_M/Ling-3.0-flash-Fin-Q4_K_M-00002-of-00002.gguf",
+      "bytes": 38217593728,
+      "sha256": "c72373f8ed8f633934ac6889d30f2e0a9c2b2d1454e29d138b1f52900ccaae36"
+    }
+  ]
+}
