@@ -1,0 +1,14 @@
+# Server runtime state, written next to the recipe that produced it.
+.llama.log
+.llama.pid
+.profile.active
+*.pid
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Editors / OS
+.DS_Store
+*.swp
