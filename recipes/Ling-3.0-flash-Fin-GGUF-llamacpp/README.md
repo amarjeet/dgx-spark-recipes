@@ -54,7 +54,7 @@ correct with no configuration. The ones you are most likely to touch:
 |---|---|---|
 | `CTX_SIZE` | per profile | Context window — the largest single lever on memory use |
 | `PARALLEL` | `1` | Server slots; `CTX_SIZE` is divided across them |
-| `PORT` | `8008` | Listen port, published on all interfaces |
+| `PORT` | `8008` | Listen port, published on the `HOST` address below |
 | `HOST` | `0.0.0.0` | Bind address — set `127.0.0.1` to keep the server off the LAN |
 | `SPEC_TYPE` | `draft-mtp` | MTP speculative decoding; `none` disables it |
 | `MLOCK` | `1` | Lock weights in RAM, never swap; `0` to oversubscribe |

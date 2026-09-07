@@ -29,7 +29,15 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/profiles.sh"
 select_profile "${1:-${DEFAULT_PROFILE}}"
 
-READY_URL="http://127.0.0.1:${PORT}/health"
+# What the host can actually reach depends on the publish address: 0.0.0.0
+# covers loopback, but HOST=192.168.x.y or a tailnet address does not, and a
+# readiness probe hardcoded to 127.0.0.1 would then wait forever on a server
+# that is already up.
+case "${HOST}" in
+  0.0.0.0|::|"") PROBE_HOST=127.0.0.1 ;;
+  *)             PROBE_HOST="${HOST}" ;;
+esac
+READY_URL="http://${PROBE_HOST}:${PORT}/health"
 
 # This checkpoint ships a multi-token-prediction layer (config.json:
 # num_nextn_predict_layers=1) and bartowski's GGUFs keep it, so llama.cpp can
@@ -95,39 +103,50 @@ spec_args=()
 # other port shows as "unhealthy" in docker ps while serving perfectly well.
 # Override it with the port we actually use, and give the start period enough
 # room for a cold 64 GiB load (~4 min) so it is not marked unhealthy mid-load.
-docker run -d \
-  --name "${CONTAINER_NAME}" \
-  --restart "${RESTART_POLICY}" \
-  --gpus all \
-  --ipc host \
-  --ulimit memlock=-1 \
-  --ulimit stack=67108864 \
-  -p "${PORT}:${PORT}" \
-  --health-cmd "curl -fsS http://localhost:${PORT}/health || exit 1" \
-  --health-interval 30s \
-  --health-start-period 30m \
-  --health-retries 3 \
-  -e LLAMA_CACHE=/root/.cache/llama.cpp \
-  -v "${LLAMA_CACHE}:/root/.cache/llama.cpp" \
-  "${IMAGE}" \
-    --model "${MODEL_FILE_CONTAINER}" \
-    --alias "${SERVED_MODEL_NAME}" \
-    --host 0.0.0.0 \
-    --port "${PORT}" \
-    --ctx-size "${CTX_SIZE}" \
-    --parallel "${PARALLEL}" \
-    --n-gpu-layers 999 \
-    --flash-attn on \
-    --batch-size "${BATCH_SIZE}" \
-    --ubatch-size "${UBATCH_SIZE}" \
-    --load-mode "${load_mode}" \
-    --jinja \
-    --reasoning-format deepseek \
-    --temp "${TEMPERATURE}" \
-    --top-p "${TOP_P}" \
-    --top-k "${TOP_K}" \
-    ${spec_args+"${spec_args[@]}"} \
-  >/dev/null
+#
+# On HOST: it is the *publish* address, and that is the only thing restricting
+# reach. The server still binds 0.0.0.0 inside the container -- it has to, or
+# the published port would have nothing to forward to -- so HOST=127.0.0.1 is
+# what actually keeps this off the LAN. A bare -p "${PORT}:${PORT}" publishes
+# on every interface no matter what HOST says, which is what this used to do.
+DOCKER_ARGS=(
+  -d
+  --name "${CONTAINER_NAME}"
+  --restart "${RESTART_POLICY}"
+  --gpus all
+  --ipc host
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+  -p "${HOST}:${PORT}:${PORT}"
+  --health-cmd "curl -fsS http://localhost:${PORT}/health || exit 1"
+  --health-interval 30s
+  --health-start-period 30m
+  --health-retries 3
+  -e LLAMA_CACHE=/root/.cache/llama.cpp
+  -v "${LLAMA_CACHE}:/root/.cache/llama.cpp"
+)
+
+SERVER_ARGS=(
+  --model "${MODEL_FILE_CONTAINER}"
+  --alias "${SERVED_MODEL_NAME}"
+  --host 0.0.0.0
+  --port "${PORT}"
+  --ctx-size "${CTX_SIZE}"
+  --parallel "${PARALLEL}"
+  --n-gpu-layers 999
+  --flash-attn on
+  --batch-size "${BATCH_SIZE}"
+  --ubatch-size "${UBATCH_SIZE}"
+  --load-mode "${load_mode}"
+  --jinja
+  --reasoning-format deepseek
+  --temp "${TEMPERATURE}"
+  --top-p "${TOP_P}"
+  --top-k "${TOP_K}"
+  ${spec_args+"${spec_args[@]}"}
+)
+
+docker run "${DOCKER_ARGS[@]}" "${IMAGE}" "${SERVER_ARGS[@]}" >/dev/null
 
 container_id="$(docker inspect -f '{{.Id}}' "${CONTAINER_NAME}")"
 printf '%s' "${container_id}" >"${PID_FILE}"
@@ -182,7 +201,7 @@ printf '  overhead       ~%s (KV at n_ctx=%s, compute buffers, MTP draft ctx)\n'
   "${CTX_SIZE}"
 grep -iE 'MTP draft|n_ctx_slot|model loaded' "${LOG_FILE}" \
   | sed 's/^[0-9.]* [A-Z] /  /' | tail -4 || true
-printf '\nOpenAI base URL : http://127.0.0.1:%s/v1\n' "${PORT}"
+printf '\nOpenAI base URL : http://%s:%s/v1\n' "${PROBE_HOST}" "${PORT}"
 printf 'model id        : %s\n' "${SERVED_MODEL_NAME}"
 printf 'smoke test      : ./scripts/smoke.py\n'
 printf 'stop            : ./stop.sh\n'
