@@ -36,8 +36,9 @@ ok()   { printf '  OK    %s\n' "$*"; }
 warn() { printf '  WARN  %s\n' "$*"; }
 bad()  { printf '  FAIL  %s\n' "$*"; fail=1; }
 
-printf 'preflight: %s (ctx %s, kv %s, mtp %s)\n\n' \
-  "${PROFILE}" "${MAX_MODEL_LEN}" "${KV_CACHE_DTYPE}" "${MTP_NUM_SPECULATIVE_TOKENS}"
+printf 'preflight: %s (ctx %s, kv %s, ssm %s, mtp %s)\n\n' \
+  "${PROFILE}" "${MAX_MODEL_LEN}" "${KV_CACHE_DTYPE}" \
+  "${MAMBA_SSM_CACHE_DTYPE:-float32}" "${MTP_NUM_SPECULATIVE_TOKENS}"
 
 printf 'platform\n'
 if require_aarch64 2>/dev/null; then ok "aarch64"; else bad "not aarch64 (found $(uname -m))"; fi
@@ -71,6 +72,7 @@ paths = [
     "models/qwen3_8_flash_next/nvidia/ple_layer.py",
     "models/qwen3_8_flash_next/nvidia/ops/qsa.py",
     "models/qwen3_8_flash_next/nvidia/qsa.py",
+    "models/qwen3_8_flash_next/nvidia/mtp.py",
     "model_executor/layers/quantization/modelopt.py",
     "model_executor/layers/ple_offload_layer.py",
     "v1/ple_offload/connector.py",
@@ -86,7 +88,7 @@ print(" ".join(p for p in paths if not os.path.isfile(os.path.join(base, p))))
     printf '        this is almost certainly a stock vllm-openai tag rather than the\n'
     printf '        qwen38-flash-next build. Run: docker pull %s\n' "${IMAGE}"
   else
-    ok "all 8 patched module paths present in the image"
+    ok "all 9 patched module paths present in the image"
   fi
 else
   bad "image not pulled: ${IMAGE} (run: docker pull ${IMAGE})"
@@ -169,6 +171,8 @@ budget_json="$("${EXPERIMENT_DIR}/scripts/budget.py" \
   --ple-gib "${PLE_GIB}" \
   --overhead-gib "${OVERHEAD_GIB}" \
   --kv-bytes-per-token "${KV_BYTES_PER_TOKEN}" \
+  --mamba-ssm-dtype "${MAMBA_SSM_CACHE_DTYPE}" \
+  --kv-ssm-bf16-mult "${KV_SSM_BF16_MULT}" \
   --kv-target-gib "${KV_TARGET_GIB}" \
   --host-reserve-gib "${HOST_RESERVE_GIB}" \
   --host-slack-gib "${HOST_SLACK_GIB}" \
@@ -228,6 +232,50 @@ else
       | grep -v "^${CONTAINER_NAME}  " | sed 's/^/    /' || true
     printf '  stop the one you do not need, then re-run preflight.\n'
   fi
+fi
+
+printf '\nserving config\n'
+if [[ "${VLLM_USE_V2_MODEL_RUNNER}" == "1" ]]; then
+  ok "V2 model runner pinned (keeps the MTP draft copy from downgrading the decode graphs)"
+else
+  warn "VLLM_USE_V2_MODEL_RUNNER=0: the draft config copy can turn FULL decode graphs into PIECEWISE"
+fi
+
+# Which decode widths get a graph. A width the scheduler can build but that was
+# never captured decodes eager, which is invisible in the log and shows up only
+# as a slower step.
+if [[ "${CUDAGRAPH_CAPTURE_SIZES}" == "auto" ]]; then
+  if cg_sizes="$("${EXPERIMENT_DIR}/scripts/graph_widths.py" \
+        --max-num-seqs "${MAX_NUM_SEQS}" --mtp "${MTP_NUM_SPECULATIVE_TOKENS}" \
+        --k-schedule "${MTP_K_SCHEDULE}" 2>&1)"; then
+    ok "decode graph widths ${cg_sizes} (every batch 1..${MAX_NUM_SEQS} seqs at MTP ${MTP_NUM_SPECULATIVE_TOKENS})"
+  else
+    bad "graph_widths.py failed: ${cg_sizes}"
+  fi
+elif [[ -n "${CUDAGRAPH_CAPTURE_SIZES}" ]]; then
+  if [[ "${CUDAGRAPH_CAPTURE_SIZES}" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+    ok "decode graph widths pinned to ${CUDAGRAPH_CAPTURE_SIZES}"
+  else
+    bad "CUDAGRAPH_CAPTURE_SIZES must be 'auto', empty, or a comma list of integers"
+  fi
+else
+  warn "CUDAGRAPH_CAPTURE_SIZES empty: vLLM's own list leaves some verify widths without a graph"
+fi
+
+if [[ -n "${MTP_DRAFT_VOCAB}" ]]; then
+  if [[ ! -f "${MTP_DRAFT_VOCAB}" ]]; then
+    bad "MTP_DRAFT_VOCAB does not exist: ${MTP_DRAFT_VOCAB}"
+    printf '        build one: ./scripts/build_draft_vocab.sh <corpus>...\n'
+  elif [[ "${MTP_DRAFT_VOCAB}" != "${VLLM_CACHE_HOST}"/* ]]; then
+    bad "MTP_DRAFT_VOCAB is outside VLLM_CACHE_HOST, so the bind mount cannot reach it"
+    printf '        put it under %s/\n' "${DRAFT_VOCAB_DIR}"
+  elif (( MTP_NUM_SPECULATIVE_TOKENS == 0 )); then
+    bad "MTP_DRAFT_VOCAB is set but MTP_NUM_SPECULATIVE_TOKENS=0, so nothing drafts"
+  else
+    ok "reduced draft head: $(wc -l <"${MTP_DRAFT_VOCAB}") rows ($(basename "${MTP_DRAFT_VOCAB}"))"
+  fi
+else
+  ok "full 248,320-row draft head (MTP_DRAFT_VOCAB unset)"
 fi
 
 printf '\nGPU tenancy\n'

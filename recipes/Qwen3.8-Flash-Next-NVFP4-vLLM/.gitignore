@@ -10,7 +10,13 @@ files/ple_layer_patched.py
 files/modelopt_patched.py
 files/qsa_ops_patched.py
 files/qsa_nvidia_patched.py
+files/mtp_patched.py
 files/ple_offload/
+
+# The reduced draft vocabulary is a generated artifact and lives in vLLM's own
+# cache root ($VLLM_CACHE_HOST/draft_vocab), never here. Belt and braces in
+# case someone points --out at the recipe directory.
+draft_vocab*.txt
 
 # Python
 __pycache__/

@@ -33,7 +33,8 @@ it was asked for.
 
 Usage:
   ./scripts/budget.py --mem-total-gib 121.69 --model-bytes 105935744618 \
-      --max-model-len 262144 --kv-cache-dtype fp8 --mtp 3
+      --max-model-len 262144 --kv-cache-dtype fp8 --mtp 3 \
+      --mamba-ssm-dtype bfloat16
 """
 import argparse
 import json
@@ -54,7 +55,13 @@ def main() -> int:
     parser.add_argument("--ple-gib", type=float, default=26.82)
     parser.add_argument("--overhead-gib", type=float, default=5.6)
     parser.add_argument("--kv-bytes-per-token", type=int, default=29482)
-    parser.add_argument("--kv-target-gib", type=float, default=16.0)
+    parser.add_argument("--mamba-ssm-dtype", default="",
+                        help="GDN recurrent state dtype; empty = the "
+                             "checkpoint's float32")
+    parser.add_argument("--kv-ssm-bf16-mult", type=float, default=0.947,
+                        help="per-token multiplier when the SSM state is "
+                             "bfloat16 (see profiles.sh KV_SSM_BF16_MULT)")
+    parser.add_argument("--kv-target-gib", type=float, default=20.0)
     parser.add_argument("--host-reserve-gib", type=float, default=26.0)
     parser.add_argument("--host-slack-gib", type=float, default=5.0)
     parser.add_argument("--os-reserve-gib", type=float, default=16.0)
@@ -72,9 +79,17 @@ def main() -> int:
     # FP8 halves the 12 full-attention layers (~84% of bytes/token) but the QSA
     # side and compressor caches stay BF16, so the real saving is ~1.7x, not 2x.
     kv_mult = 0.58 if args.kv_cache_dtype.startswith("fp8") else 1.0
+    # A bfloat16 GDN recurrent state halves the mamba page, and vLLM then sizes
+    # a smaller attention block, so the pool holds more tokens per byte. The
+    # multiplier is upstream's measured 512K/FP8 pair, not a figure calibrated
+    # here -- it exists so preflight and start agree, and vLLM's own profiling
+    # is what the launch actually reports.
+    ssm_mult = (args.kv_ssm_bf16_mult
+                if args.mamba_ssm_dtype.startswith("bfloat16") else 1.0)
+    per_token = args.kv_bytes_per_token * kv_mult * ssm_mult
 
     fixed = weights_gpu + args.overhead_gib + mtp_gib
-    kv_need = args.max_model_len * args.kv_bytes_per_token * kv_mult / GIB
+    kv_need = args.max_model_len * per_token / GIB
     wish = fixed + max(kv_need, args.kv_target_gib)
     cap = total - args.host_reserve_gib
     cap_binds = wish > cap
@@ -90,7 +105,7 @@ def main() -> int:
         pinned_above_cap = False
 
     kv_expect = budget - fixed
-    kv_expect_tok = int(max(kv_expect, 0) * GIB / (args.kv_bytes_per_token * kv_mult))
+    kv_expect_tok = int(max(kv_expect, 0) * GIB / per_token)
 
     container_mem = (int(args.container_mem_gib) if args.container_mem_gib
                      else int(budget + args.host_slack_gib))
@@ -103,6 +118,8 @@ def main() -> int:
         "overhead_gib": args.overhead_gib,
         "mtp_gib": mtp_gib,
         "kv_mult": kv_mult,
+        "ssm_mult": ssm_mult,
+        "kv_bytes_per_token": round(per_token, 1),
         "kv_need_gib": round(kv_need, 2),
         "kv_target_gib": args.kv_target_gib,
         "budget_cap_gib": round(cap, 2),

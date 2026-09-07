@@ -56,6 +56,7 @@ it, not just this one.
 | `VLLM_CACHE_HOST` | `~/.cache/vllm` | *(vLLM recipes)* Host side of vLLM's cache root — torch.compile cache, and any packed table a model builds. Mounted onto `/root/.cache/vllm`, the in-container default. Natively, vLLM reads `VLLM_CACHE_ROOT`. |
 | `FLASHINFER_CACHE_HOST` | `~/.cache/flashinfer` | *(vLLM recipes)* Mounted onto `/root/.cache/flashinfer`. Natively, flashinfer reads `FLASHINFER_WORKSPACE_BASE` (base is `~`). |
 | `TRITON_CACHE_HOST` | `~/.triton` | *(vLLM recipes)* The whole `.triton` tree, not just `cache/`, so triton's own sub-layout applies inside. Natively, triton reads `TRITON_CACHE_DIR`. |
+| `DRAFT_VOCAB_DIR` | `$VLLM_CACHE_HOST/draft_vocab` | *(vLLM recipes, speculative decoding)* Generated reduced draft vocabularies. Under `VLLM_CACHE_HOST` deliberately: that tree is already mounted at vLLM's in-container default, so a vocabulary there needs no mount of its own. Recipes assert the containment. |
 | `OUT_DIR` | `${XDG_STATE_HOME:-~/.local/state}/dgx-spark-recipes/<recipe>` | Bench results and verification stamps. Never inside the recipe directory. |
 | `XDG_STATE_HOME` | `~/.local/state` | Standard base for `OUT_DIR`; honored rather than assumed. |
 
@@ -77,6 +78,13 @@ invocation.
 | `MLOCK` | `1` | Lock weights in RAM so they never reach swap. `0` opts out, allowing oversubscription. |
 | `RESTART_POLICY` | `unless-stopped` | Docker restart policy; survives reboot. `no` for a one-off run. |
 | `TEMPERATURE` / `TOP_P` / `TOP_K` | `1.0` / `0.95` / `20` | Server-side sampling defaults, so clients that send nothing still get the model card's recommendation. |
+| `REASONING_EFFORT` | *(unset)* | *(vLLM recipes, thinking models)* Thinking depth pinned server-wide through the chat template. Unset leaves the template's own default, which is not necessarily the cheap one — Qwen3.8-Flash-Next defaults to `xhigh`. Clients override it per request with `chat_template_kwargs`. |
+| `MAMBA_SSM_CACHE_DTYPE` | per profile | *(vLLM recipes, hybrid/GDN models)* dtype of the recurrent (SSM) state. **Empty is a meaningful value** — it selects the checkpoint's own dtype — so recipes read it with `${VAR-default}`, not `${VAR:-default}`, and tell "unset" from "set to empty". |
+| `CUDAGRAPH_CAPTURE_SIZES` | `auto` | *(vLLM recipes)* Which decode batch widths get a CUDA graph. `auto` enumerates every width the scheduler can actually build, so none falls back to eager; empty keeps vLLM's own list. Also read with `${VAR-default}`. |
+| `COMPILATION_MODE` | `0` | *(vLLM recipes)* `torch.compile` level passed through `--compilation-config`. `0` is no compilation; `3` is Inductor fusion. |
+| `VLLM_USE_V2_MODEL_RUNNER` | `1` | *(vLLM recipes with speculative decoding)* Pins the V2 model runner on **every** config copy. A draft config that falls back to V1 can mutate the `compilation_config` it shares with the target and silently downgrade its CUDA graphs. Its own variable rather than a default for `EXTRA_DOCKER_ARGS`, so setting that escape hatch cannot drop a safety default. |
+| `MTP_DRAFT_VOCAB` | *(unset)* | *(vLLM recipes with MTP)* Path to a reduced draft vocabulary. Must sit under `VLLM_CACHE_HOST`; see `DRAFT_VOCAB_DIR`. |
+| `MTP_K_SCHEDULE` | *(unset)* | *(vLLM recipes with MTP)* Speculative depth per batch-size range, `start:end:K,...`. Empty keeps a constant depth. |
 
 **Preflight and tooling.** Thresholds and helper knobs.
 

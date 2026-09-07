@@ -30,8 +30,8 @@
 #   runtime overhead ........   5.6  GiB   (non-torch 3.37 + activation 1.92
 #                                          + graphs 0.12, measured at TP=1)
 #   MTP draft model .........   1.49 GiB   (MTP_NUM_SPECULATIVE_TOKENS > 0)
-#   KV cache ................  what the host-side cap leaves (~16 GiB at the
-#                              default HOST_RESERVE_GIB=26; FP8 => ~1M tokens)
+#   KV cache ................  what the host-side cap leaves (~16.7 GiB at the
+#                              default HOST_RESERVE_GIB=26; FP8 => ~1.1M tokens)
 #
 # The PLE n-gram table is served by vLLM's CPU-offload worker from a
 # MEMORY-MAPPED pre-packed file (files/build_ple_packed_table.py, built here on
@@ -44,6 +44,15 @@
 # files/patch_ple_offload.py (CUDA stream memory ops are unsupported on GB10
 # and deadlocked the GPU worker after graph capture) and
 # files/patch_ple_layer.py (offload rows must carry codes AND scales).
+#
+# The same two patches also batch the PLE row gather's page faults through a
+# posix_fadvise(WILLNEED) pass. One CPU thread walking a list of unrelated
+# 90-byte rows faults each 4 KiB page in at queue depth 1 while the GPU worker
+# waits; naming the pages up front is worth ~7-10% prefill, where a 2,048-token
+# chunk gathers ~32,768 rows against the ~256 a decode step gathers.
+#
+# files/patch_mtp_draft_vocab.py adds a reduced-vocabulary path to the MTP
+# drafter. It is inert unless MTP_DRAFT_VOCAB names a file.
 #
 # SAFETY (no sudo needed):
 #   * The GPU budget is capped FROM THE HOST SIDE at MemTotal -
@@ -65,6 +74,8 @@
 #   MAX_MODEL_LEN=65536 ./start.sh
 #   MTP_NUM_SPECULATIVE_TOKENS=0 ./start.sh   # give back 1.49 GiB
 #   HOST_RESERVE_GIB=28 ./start.sh            # more host margin, less KV
+#   MAMBA_SSM_CACHE_DTYPE= ./start.sh         # float32 recurrent state
+#   MTP_DRAFT_VOCAB=~/.cache/vllm/draft_vocab/en_code_65k.txt ./start.sh
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -75,7 +86,7 @@ PROFILE_ARG=""
 for arg in "$@"; do
   case "${arg}" in
     --no-launch) DO_LAUNCH=false ;;
-    -h|--help)   sed -n '1,62p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help)   sed -n '13,78p' "$0" | sed 's/^# \?//'; exit 0 ;;
     -*)          printf 'unknown option: %s (try --help)\n' "${arg}" >&2; exit 2 ;;
     *)           PROFILE_ARG="${arg}" ;;
   esac
@@ -119,6 +130,58 @@ case "${KV_CACHE_DTYPE}" in
     ;;
   *) err "KV_CACHE_DTYPE must be auto, bfloat16, fp8 or fp8_e4m3 (got '${KV_CACHE_DTYPE}')" ;;
 esac
+
+# The chat template raises on anything outside this set, and it raises at request
+# time, not at load -- the server would come up healthy and fail every completion.
+case "${REASONING_EFFORT}" in
+  ""|low|medium|xhigh) ;;
+  *) err "REASONING_EFFORT must be low, medium, xhigh or empty (got '${REASONING_EFFORT}')" ;;
+esac
+
+# The fused GDN kernel accepts exactly these (FUSED_GDN_STATE_DTYPES in
+# qwen_gdn_linear_attn.py). Anything else fails deep in the first forward pass,
+# minutes into a load.
+case "${MAMBA_SSM_CACHE_DTYPE}" in
+  ""|float32|bfloat16) ;;
+  *) err "MAMBA_SSM_CACHE_DTYPE must be float32, bfloat16 or empty (got '${MAMBA_SSM_CACHE_DTYPE}')" ;;
+esac
+
+[[ "${COMPILATION_MODE}" =~ ^[0-3]$ ]] || err \
+  "COMPILATION_MODE must be 0..3 (got '${COMPILATION_MODE}')"
+[[ "${VLLM_USE_V2_MODEL_RUNNER}" =~ ^[01]$ ]] || err \
+  "VLLM_USE_V2_MODEL_RUNNER must be 0 or 1 (got '${VLLM_USE_V2_MODEL_RUNNER}')"
+
+if [[ "${VLLM_USE_V2_MODEL_RUNNER}" == "0" ]]; then
+  warn "VLLM_USE_V2_MODEL_RUNNER=0: the MTP draft config copy will fall back to"
+  warn "      the V1 runner and mutate the compilation_config it shares with the"
+  warn "      target, turning FULL decode graphs into PIECEWISE. Upstream measured"
+  warn "      that at +24% single-stream step time and a driver overrun the"
+  warn "      watchdog had to stop. Watch the log for 'Overriding cudagraph_mode'."
+fi
+
+# The reduced draft head is a generated artifact reused across launches, so it
+# belongs in vLLM's own cache root -- which is already bind-mounted at the
+# in-container default, so containment is what makes the mount reach it. Same
+# assert as MODEL_ROOT/LLAMA_CACHE in the llama.cpp recipes.
+MTP_DRAFT_VOCAB_CTR=""
+if [[ -n "${MTP_DRAFT_VOCAB}" ]]; then
+  (( MTP_NUM_SPECULATIVE_TOKENS > 0 )) || err \
+    "MTP_DRAFT_VOCAB is set but MTP_NUM_SPECULATIVE_TOKENS=0, so nothing drafts.
+       Unset one of them."
+  [[ -f "${MTP_DRAFT_VOCAB}" ]] || err \
+    "MTP_DRAFT_VOCAB=${MTP_DRAFT_VOCAB} does not exist.
+       Build one: ./scripts/build_draft_vocab.sh <corpus>..."
+  # Resolve before comparing: a symlink or a relative path that leaves the tree
+  # would produce a container path that simply is not there, and the failure
+  # would surface as a silent fallback to the full head.
+  MTP_DRAFT_VOCAB="$(cd "$(dirname "${MTP_DRAFT_VOCAB}")" && pwd)/$(basename "${MTP_DRAFT_VOCAB}")"
+  [[ "${MTP_DRAFT_VOCAB}" == "${VLLM_CACHE_HOST}"/* ]] || err \
+    "MTP_DRAFT_VOCAB is outside VLLM_CACHE_HOST, so the bind mount cannot reach it.
+       vocab: ${MTP_DRAFT_VOCAB}
+       cache: ${VLLM_CACHE_HOST}
+       Put it under ${DRAFT_VOCAB_DIR}/ instead."
+  MTP_DRAFT_VOCAB_CTR="/root/.cache/vllm/${MTP_DRAFT_VOCAB#"${VLLM_CACHE_HOST}"/}"
+fi
 
 # YARN_FACTOR stays empty unless YaRN is actually applied; it is the single
 # flag the rest of the script keys off.
@@ -196,6 +259,8 @@ budget_json="$("${EXPERIMENT_DIR}/scripts/budget.py" \
   --ple-gib "${PLE_GIB}" \
   --overhead-gib "${OVERHEAD_GIB}" \
   --kv-bytes-per-token "${KV_BYTES_PER_TOKEN}" \
+  --mamba-ssm-dtype "${MAMBA_SSM_CACHE_DTYPE}" \
+  --kv-ssm-bf16-mult "${KV_SSM_BF16_MULT}" \
   --kv-target-gib "${KV_TARGET_GIB}" \
   --host-reserve-gib "${HOST_RESERVE_GIB}" \
   --host-slack-gib "${HOST_SLACK_GIB}" \
@@ -224,7 +289,7 @@ info "  weights on GPU ........... ${WEIGHTS_GPU_GIB} GiB  (checkpoint minus ${P
 info "  PLE table ................ ${PLE_GIB} GiB  memory-mapped in the CPU offload worker"
 info "  runtime overhead ......... ${OVERHEAD_GIB} GiB"
 (( MTP_NUM_SPECULATIVE_TOKENS > 0 )) && info "  MTP draft model .......... 1.49 GiB"
-info "  KV needed for ${MAX_MODEL_LEN} ...... ${KV_NEED_GIB} GiB  (kv dtype ${KV_CACHE_DTYPE})"
+info "  KV needed for ${MAX_MODEL_LEN} ...... ${KV_NEED_GIB} GiB  (kv dtype ${KV_CACHE_DTYPE}, ssm state ${MAMBA_SSM_CACHE_DTYPE:-float32})"
 info "  host reserve ............. ${HOST_RESERVE_GIB} GiB => GPU budget cap ${BUDGET_CAP_GIB} GiB"
 (( CAP_BINDS )) && warn "  KV target ${KV_TARGET_GIB} GiB reduced to ${KV_EXPECT_GIB} GiB by HOST_RESERVE_GIB=${HOST_RESERVE_GIB}"
 info "  GPU budget (gmu ${GPU_MEMORY_UTILIZATION}) .. ${BUDGET_GIB} GiB => ~${KV_EXPECT_GIB} GiB KV (~${KV_EXPECT_TOK} tokens)"
@@ -286,6 +351,7 @@ PLE_PKG="${VLLM_PKG}/models/qwen3_8_flash_next/nvidia/ple_layer.py"
 MODELOPT_PKG="${VLLM_PKG}/model_executor/layers/quantization/modelopt.py"
 QSA_OPS_PKG="${VLLM_PKG}/models/qwen3_8_flash_next/nvidia/ops/qsa.py"
 QSA_NVIDIA_PKG="${VLLM_PKG}/models/qwen3_8_flash_next/nvidia/qsa.py"
+MTP_PKG="${VLLM_PKG}/models/qwen3_8_flash_next/nvidia/mtp.py"
 
 docker image inspect "${IMAGE}" &>/dev/null || {
   info "Pulling ${IMAGE} ..."
@@ -320,6 +386,15 @@ extract "${QSA_OPS_PKG}"    "${PATCHED_QSA_OPS}.orig"
 extract "${QSA_NVIDIA_PKG}" "${PATCHED_QSA_NVIDIA}.orig"
 python3 "${EXPERIMENT_DIR}/files/patch_qsa_fp8_kv.py"
 [[ -f "${PATCHED_QSA_OPS}" && -f "${PATCHED_QSA_NVIDIA}" ]] || err "QSA fp8 patch missing after patch_qsa_fp8_kv.py"
+
+# Reduced-vocabulary drafting. The patch adds get_top_tokens() to
+# Qwen3_8FlashNextMTP and leaves compute_logits on the full head, and it is
+# inert unless VLLM_MTP_DRAFT_VOCAB is set in the container -- so it is applied
+# unconditionally and costs nothing when MTP_DRAFT_VOCAB is empty.
+PATCHED_MTP="${EXPERIMENT_DIR}/files/mtp_patched.py"
+extract "${MTP_PKG}" "${PATCHED_MTP}.orig"
+python3 "${EXPERIMENT_DIR}/files/patch_mtp_draft_vocab.py"
+[[ -f "${PATCHED_MTP}" ]] || err "MTP patch missing after patch_mtp_draft_vocab.py"
 
 OFFLOAD_DIR="${EXPERIMENT_DIR}/files/ple_offload"
 mkdir -p "${OFFLOAD_DIR}/orig"
@@ -360,6 +435,8 @@ VLLM_ARGS+=(--max-num-seqs "${MAX_NUM_SEQS}")
 VLLM_ARGS+=(--max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}")
 VLLM_ARGS+=(--max-model-len "${MAX_MODEL_LEN}")
 VLLM_ARGS+=(--kv-cache-dtype "${KV_CACHE_DTYPE}")
+# Empty leaves the checkpoint's own mamba_ssm_dtype (float32) in place.
+[[ -n "${MAMBA_SSM_CACHE_DTYPE}" ]] && VLLM_ARGS+=(--mamba-ssm-cache-dtype "${MAMBA_SSM_CACHE_DTYPE}")
 if [[ -n "${YARN_FACTOR}" ]]; then
   # Deep-merged into text_config.rope_parameters, which is what this model reads
   # (nvidia/qsa.py) and what vLLM's own max-len check scales by. The existing
@@ -373,13 +450,56 @@ VLLM_ARGS+=(--enable-chunked-prefill)
 VLLM_ARGS+=(--reasoning-parser qwen3)
 VLLM_ARGS+=(--enable-auto-tool-choice)
 VLLM_ARGS+=(--tool-call-parser qwen3_coder)
+# --default-chat-template-kwargs, not --chat-template-kwargs: the latter is the
+# request field name and is not a CLI flag. Request-level chat_template_kwargs
+# merges over this, so a client can still override the server default per call.
+[[ -n "${REASONING_EFFORT}" ]] && VLLM_ARGS+=(--default-chat-template-kwargs \
+  "$(printf '{"reasoning_effort":"%s"}' "${REASONING_EFFORT}")")
 # REQUIRED for PLE offload: only multiproc_executor spawns the offload worker.
 VLLM_ARGS+=(--distributed-executor-backend mp)
 [[ -n "${KV_CACHE_MEMORY}" ]] && VLLM_ARGS+=(--kv-cache-memory "${KV_CACHE_MEMORY}")
 if (( MTP_NUM_SPECULATIVE_TOKENS > 0 )); then
-  VLLM_ARGS+=(--speculative-config "$(printf '{"method":"mtp","num_speculative_tokens":%s}' "${MTP_NUM_SPECULATIVE_TOKENS}")")
+  spec_extra=""
+  if [[ -n "${MTP_K_SCHEDULE}" ]]; then
+    spec_extra+=",$(printf '"num_speculative_tokens_per_batch_size":[%s]' \
+      "$(python3 - "${MTP_K_SCHEDULE}" <<'PY'
+import sys
+out = []
+for part in filter(None, (p.strip() for p in sys.argv[1].split(","))):
+    fields = part.split(":")
+    if len(fields) != 3:
+        raise SystemExit(f"bad MTP_K_SCHEDULE range {part!r}: expected start:end:K")
+    out.append("[%d,%d,%d]" % tuple(int(x) for x in fields))
+print(",".join(out))
+PY
+)")"
+  fi
+  # get_top_tokens() -- the only path that reads the sliced head -- is called by
+  # the speculator only under use_local_argmax_reduction, so the flag and the
+  # vocabulary have to travel together.
+  [[ -n "${MTP_DRAFT_VOCAB}" ]] && spec_extra+=',"use_local_argmax_reduction":true'
+  VLLM_ARGS+=(--speculative-config "$(printf '{"method":"mtp","num_speculative_tokens":%s%s}' \
+    "${MTP_NUM_SPECULATIVE_TOKENS}" "${spec_extra}")")
 fi
-VLLM_ARGS+=(--compilation-config "$(printf '{"mode":0,"cudagraph_mode":"%s"}' "${CUDAGRAPH_MODE}")")
+
+# Decode graph widths. "auto" enumerates every verify batch the scheduler can
+# build, so none of them falls back to eager; see scripts/graph_widths.py.
+CG_SIZES="${CUDAGRAPH_CAPTURE_SIZES}"
+if [[ "${CG_SIZES}" == "auto" ]]; then
+  CG_SIZES="$("${EXPERIMENT_DIR}/scripts/graph_widths.py" \
+    --max-num-seqs "${MAX_NUM_SEQS}" \
+    --mtp "${MTP_NUM_SPECULATIVE_TOKENS}" \
+    --k-schedule "${MTP_K_SCHEDULE}")" || err "graph_widths.py failed"
+fi
+if [[ -n "${CG_SIZES}" ]]; then
+  [[ "${CG_SIZES}" =~ ^[0-9]+(,[0-9]+)*$ ]] || err \
+    "CUDAGRAPH_CAPTURE_SIZES must be 'auto', empty, or a comma list of integers (got '${CG_SIZES}')"
+  VLLM_ARGS+=(--compilation-config "$(printf '{"mode":%s,"cudagraph_mode":"%s","cudagraph_capture_sizes":[%s]}' \
+    "${COMPILATION_MODE}" "${CUDAGRAPH_MODE}" "${CG_SIZES}")")
+else
+  VLLM_ARGS+=(--compilation-config "$(printf '{"mode":%s,"cudagraph_mode":"%s"}' \
+    "${COMPILATION_MODE}" "${CUDAGRAPH_MODE}")")
+fi
 VLLM_ARGS+=(--host 0.0.0.0 --port "${PORT}")
 # Word-split deliberately: this is the documented escape hatch for extra flags.
 # shellcheck disable=SC2206
@@ -404,10 +524,12 @@ DOCKER_ARGS=(
   -e VLLM_PLE_CPU_OFFLOAD=1
   -e VLLM_PLE_PACKED_TABLE_DIR="${PLE_CACHE_CTR}"
   -e VLLM_PLE_OFFLOAD_STEP_TIMEOUT=300
+  -e "VLLM_USE_V2_MODEL_RUNNER=${VLLM_USE_V2_MODEL_RUNNER}"
   -v "${PATCHED_PLE}:${PLE_PKG}:ro"
   -v "${PATCHED_MODELOPT}:${MODELOPT_PKG}:ro"
   -v "${PATCHED_QSA_OPS}:${QSA_OPS_PKG}:ro"
   -v "${PATCHED_QSA_NVIDIA}:${QSA_NVIDIA_PKG}:ro"
+  -v "${PATCHED_MTP}:${MTP_PKG}:ro"
   -v "${OFFLOAD_DIR}/ple_offload_layer.py:${VLLM_PKG}/model_executor/layers/ple_offload_layer.py:ro"
   -v "${OFFLOAD_DIR}/connector.py:${VLLM_PKG}/v1/ple_offload/connector.py:ro"
   -v "${OFFLOAD_DIR}/worker.py:${VLLM_PKG}/v1/ple_offload/worker.py:ro"
@@ -423,6 +545,10 @@ DOCKER_ARGS=(
 # empty argument rather than none.
 resolve_hf_token
 [[ -n "${HF_TOKEN}" ]] && DOCKER_ARGS+=(-e "HF_TOKEN=${HF_TOKEN}")
+# No extra -v: the vocabulary lives under VLLM_CACHE_HOST, which is already
+# mounted at vLLM's in-container cache default, and the containment assert in
+# step 0 is what guarantees this path resolves inside it.
+[[ -n "${MTP_DRAFT_VOCAB}" ]] && DOCKER_ARGS+=(-e "VLLM_MTP_DRAFT_VOCAB=${MTP_DRAFT_VOCAB_CTR}")
 # shellcheck disable=SC2206
 [[ -n "${EXTRA_DOCKER_ARGS}" ]] && DOCKER_ARGS+=(${EXTRA_DOCKER_ARGS})
 
@@ -437,16 +563,31 @@ else
 info "  Context:    ${MAX_MODEL_LEN} tokens (native rope, no YaRN)"
 fi
 info "  Max seqs:   ${MAX_NUM_SEQS}   Batched tokens: ${MAX_NUM_BATCHED_TOKENS}   KV dtype: ${KV_CACHE_DTYPE}"
-info "  MTP:        ${MTP_NUM_SPECULATIVE_TOKENS}$( (( MTP_NUM_SPECULATIVE_TOKENS == 0 )) && printf ' (disabled)')"
-info "  Graphs:     ${CUDAGRAPH_MODE}"
+info "  SSM state:  ${MAMBA_SSM_CACHE_DTYPE:-float32 (checkpoint default)}"
+info "  MTP:        ${MTP_NUM_SPECULATIVE_TOKENS}$( (( MTP_NUM_SPECULATIVE_TOKENS == 0 )) && printf ' (disabled)')${MTP_K_SCHEDULE:+   K schedule: ${MTP_K_SCHEDULE}}"
+if [[ -n "${MTP_DRAFT_VOCAB}" ]]; then
+info "  Draft head: $(wc -l <"${MTP_DRAFT_VOCAB}") rows from $(basename "${MTP_DRAFT_VOCAB}")"
+else
+info "  Draft head: full vocabulary (248320 rows)"
+fi
+info "  Graphs:     ${CUDAGRAPH_MODE}   capture: ${CG_SIZES:-vllm default}   compile mode: ${COMPILATION_MODE}"
+info "  Thinking:   ${REASONING_EFFORT:-xhigh (chat template default, not pinned)}"
 info "  Listening:  ${HOST}:${PORT}"
 info "  Log:        ${LOG_FILE}"
 printf '\n'
 
 if ! ${DO_LAUNCH}; then
   info "--no-launch: the command that would run"
+  # The token is redacted rather than printed: this output is meant to be
+  # pasted into a terminal, a bug report or a log, and a Hugging Face token
+  # that has been through any of those has to be rotated.
   printf 'docker run'
-  printf ' %q' "${DOCKER_ARGS[@]}" "${IMAGE}" "${MODEL_ID}" "${VLLM_ARGS[@]}"
+  for a in "${DOCKER_ARGS[@]}" "${IMAGE}" "${MODEL_ID}" "${VLLM_ARGS[@]}"; do
+    case "${a}" in
+      HF_TOKEN=*) printf ' %q' "HF_TOKEN=<redacted>" ;;
+      *)          printf ' %q' "${a}" ;;
+    esac
+  done
   printf '\n'
   exit 0
 fi

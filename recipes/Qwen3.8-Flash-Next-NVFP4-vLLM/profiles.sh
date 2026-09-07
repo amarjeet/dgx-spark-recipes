@@ -104,6 +104,17 @@ _ENV_MTP="${MTP_NUM_SPECULATIVE_TOKENS:-}"
 _ENV_MAX_NUM_SEQS="${MAX_NUM_SEQS:-}"
 _ENV_MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-}"
 _ENV_KV_TARGET_GIB="${KV_TARGET_GIB:-}"
+# MAMBA_SSM_CACHE_DTYPE needs "unset" and "set to empty" told apart, because
+# EMPTY IS A MEANINGFUL VALUE: it selects the checkpoint's own float32 state,
+# and `MAMBA_SSM_CACHE_DTYPE= ./start.sh` is the documented way to ask for it.
+# "${VAR:-default}" cannot express that, so the flag is recorded separately.
+if [[ -v MAMBA_SSM_CACHE_DTYPE ]]; then
+  _ENV_MAMBA_SSM_CACHE_DTYPE_SET=1
+  _ENV_MAMBA_SSM_CACHE_DTYPE="${MAMBA_SSM_CACHE_DTYPE}"
+else
+  _ENV_MAMBA_SSM_CACHE_DTYPE_SET=0
+  _ENV_MAMBA_SSM_CACHE_DTYPE=""
+fi
 
 # --- memory budget -----------------------------------------------------------
 #
@@ -134,6 +145,15 @@ OVERHEAD_GIB="${OVERHEAD_GIB:-5.6}"
 PLE_GIB="${PLE_GIB:-26.82}"
 # Measured KV cost at bf16 for this architecture: 28.8 KiB/token.
 KV_BYTES_PER_TOKEN="${KV_BYTES_PER_TOKEN:-29482}"
+# What a bfloat16 GDN recurrent state does to the per-token figure above.
+# Halving the SSM state also halves the mamba page, and vLLM then picks a
+# smaller attention block (3,200 -> 1,664 tokens), so the pool holds more
+# tokens for slightly less memory. Upstream measured the pair at 512K YaRN /
+# FP8: 17.3 GiB = 1,161,935 tokens at float32 against 16.64 GiB = 1,180,814 at
+# bfloat16, which is this ratio. NOT calibrated on this host and not measured
+# at 262K -- it keeps preflight and start from drifting apart, and vLLM's own
+# profiling (which start.sh reports) is the ground truth either way.
+KV_SSM_BF16_MULT="${KV_SSM_BF16_MULT:-0.947}"
 # Optional hard pins. Empty means derived in start.sh step 2.
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-}"
 KV_CACHE_MEMORY="${KV_CACHE_MEMORY:-}"
@@ -158,6 +178,72 @@ STOP_TIMEOUT="${STOP_TIMEOUT:-30}"
 # --- serving -----------------------------------------------------------------
 
 CUDAGRAPH_MODE="${CUDAGRAPH_MODE:-FULL_DECODE_ONLY}"   # NONE for eager debug
+# Which decode batch widths get a CUDA graph. vLLM's own list is [1,2,4] plus
+# multiples of 8, rounded up to a multiple of (1+MTP) and filtered to
+# <= (1+MTP)*MAX_NUM_SEQS -- which at MTP=3, MAX_NUM_SEQS=4 leaves {4,8,16}: a
+# 3-sequence verify batch (12 tokens) pads up to 16 and a 5-sequence batch (20
+# tokens) has no graph at all and decodes eager.
+#
+# "auto" captures every (1+K(S))*S the scheduler can actually build, so no
+# width falls back to eager; a comma list sets them explicitly; empty keeps
+# vLLM's list. Capture costs ~1 s and a few MiB per size. Computed by
+# scripts/graph_widths.py so start.sh and the README cannot disagree.
+#
+# Plain "-", not ":-": an explicitly empty CUDAGRAPH_CAPTURE_SIZES= means "keep
+# vLLM's own list", which is a different request from not setting it at all.
+CUDAGRAPH_CAPTURE_SIZES="${CUDAGRAPH_CAPTURE_SIZES-auto}"
+# torch.compile level: 0 = none, 3 = VLLM_COMPILE (Inductor fusion). Upstream
+# measured 3 at +0.3% single-stream and +1.0% at four -- inside noise, because
+# decode here is bandwidth-bound and fusion only helps the part of the step
+# that is not. It is safe (compiles in 13 s, keeps FULL decode graphs, does not
+# disturb the PLE custom op) and it buys nothing. 0 stays the default.
+COMPILATION_MODE="${COMPILATION_MODE:-0}"
+# Pin vLLM's V2 model runner on every config copy. This architecture already
+# selects V2 for the target, but the speculative draft copy
+# (Qwen3_8FlashNextMTP) is not in the V2 default set, falls back to V1, and
+# mutates the compilation_config object it SHARES with the target -- silently
+# turning FULL decode graphs into PIECEWISE. Upstream measured that costing
+# +24% on the single-stream step and driving the driver to 99.4 GiB against a
+# 94.87 GiB budget until the watchdog stopped the server. This is a safety
+# default, not a tuning knob; it is its own variable rather than a default for
+# EXTRA_DOCKER_ARGS so that setting that escape hatch cannot silently drop it.
+VLLM_USE_V2_MODEL_RUNNER="${VLLM_USE_V2_MODEL_RUNNER:-1}"
+# Speculative depth as a function of batch size, "start:end:K,..." over
+# inclusive num_seqs ranges (e.g. "1:2:3,3:5:2,6:8:1"). Empty keeps a constant
+# MTP_NUM_SPECULATIVE_TOKENS, which is what you want: upstream's static sweep
+# (K=0/1/2/3 at S=1/2/4/8, FULL graphs throughout) found K=3 optimal at every
+# concurrency, K=2 tied, K=1 losing 8-14%. There is no crossover to schedule.
+#
+# WARNING if you set it anyway: vLLM then overrides cudagraph_mode from
+# FULL_DECODE_ONLY to PIECEWISE via the draft config copy. Keep
+# VLLM_USE_V2_MODEL_RUNNER=1 -- that is what prevents it.
+MTP_K_SCHEDULE="${MTP_K_SCHEDULE:-}"
+# Reduced-vocabulary drafting (FR-Spec). A file of token ids, one per line,
+# built by files/build_draft_vocab.py from a corpus of the model's own output.
+# The MTP drafter reads a 1.18 GiB BF16 lm_head over the full 248,320-token
+# vocabulary once per draft step -- three of the four lm_head reads in an MTP-3
+# engine step -- to produce one argmax; a 65,536-row slice is 0.31 GiB, saving
+# 2.61 GiB of traffic per step. Upstream measured -16.9% single-stream step
+# time, the largest win on that host, with MGSM accuracy unchanged.
+#
+# Accuracy is safe structurally, not by luck: the rejection sampler keeps a
+# draft only when it equals the target model's own argmax and emits the
+# target's token otherwise, so a reduced-vocabulary drafter is indistinguishable
+# from a less accurate one -- exactly the case rejection sampling exists for.
+#
+# Must live under VLLM_CACHE_HOST: it is a generated artifact, reused across
+# launches, and that tree is already bind-mounted at vLLM's in-container cache
+# default, so no extra mount is needed. start.sh asserts the containment.
+# Empty keeps the full head. See README "Reduced-vocabulary drafting".
+MTP_DRAFT_VOCAB="${MTP_DRAFT_VOCAB:-}"
+# Where build_draft_vocab.py writes, and the only tree start.sh will accept a
+# vocabulary from.
+DRAFT_VOCAB_DIR="${DRAFT_VOCAB_DIR:-${VLLM_CACHE_HOST}/draft_vocab}"
+# Thinking depth, applied server-side through the chat template. Empty leaves the
+# template's own default in place, which is xhigh -- every request then carries
+# "Reasoning effort is set to xhigh" in its system message and pays for the
+# longer trace out of MAX_NUM_SEQS worth of KV. low, medium or xhigh to pin it.
+REASONING_EFFORT="${REASONING_EFFORT:-}"
 # PLE offload is not optional at TP=1: 98.6 GiB of weights through UVM hangs
 # the host. start.sh refuses to disable it.
 PLE_OFFLOAD="${PLE_OFFLOAD:-true}"
@@ -183,6 +269,12 @@ YARN_CEILING_MODEL_LEN="${YARN_CEILING_MODEL_LEN:-524288}"
 #   yarn512  524,288 ctx, FP8 KV    YaRN rope scaling, 2x native
 #   bf16kv   262,144 ctx, BF16 KV   quality-conservative: no quantized keys
 #
+# native and yarn512 also run the GDN recurrent state at bfloat16, which is
+# upstream's shipped default and worth +8.5% decode at 8 streams. bf16kv keeps
+# the checkpoint's float32 state: it exists to be the profile that quantizes
+# nothing, and a recurrent state is a worse place to lose precision than a KV
+# block, so the two choices belong together.
+#
 # FP8 KV is a capacity trade, not a free win. It roughly doubles the KV pool
 # (~1.85x here: the 12 full-attention layers halve, but the QSA side and
 # compressor caches stay BF16), which is what makes a 512K context reachable.
@@ -195,6 +287,16 @@ YARN_CEILING_MODEL_LEN="${YARN_CEILING_MODEL_LEN:-524288}"
 DEFAULT_PROFILE="${DEFAULT_PROFILE:-native}"
 KNOWN_PROFILES=(native yarn512 bf16kv)
 
+# The per-profile default for a knob whose empty value is meaningful: the
+# caller's choice wins whenever they made one, even an empty one.
+_ssm_dtype() {  # _ssm_dtype <profile fallback>
+  if (( _ENV_MAMBA_SSM_CACHE_DTYPE_SET )); then
+    printf '%s' "${_ENV_MAMBA_SSM_CACHE_DTYPE}"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 select_profile() {
   PROFILE="${1:-${DEFAULT_PROFILE}}"
 
@@ -203,16 +305,20 @@ select_profile() {
       YARN="${_ENV_YARN:-0}"
       MAX_MODEL_LEN="${_ENV_MAX_MODEL_LEN:-262144}"
       KV_CACHE_DTYPE="${_ENV_KV_CACHE_DTYPE:-fp8}"
+      MAMBA_SSM_CACHE_DTYPE="$(_ssm_dtype bfloat16)"
       ;;
     yarn512)
       YARN="${_ENV_YARN:-1}"
       MAX_MODEL_LEN="${_ENV_MAX_MODEL_LEN:-524288}"
       KV_CACHE_DTYPE="${_ENV_KV_CACHE_DTYPE:-fp8}"
+      MAMBA_SSM_CACHE_DTYPE="$(_ssm_dtype bfloat16)"
       ;;
     bf16kv)
       YARN="${_ENV_YARN:-0}"
       MAX_MODEL_LEN="${_ENV_MAX_MODEL_LEN:-262144}"
       KV_CACHE_DTYPE="${_ENV_KV_CACHE_DTYPE:-bfloat16}"
+      # Deliberately float32: see the profile table note above.
+      MAMBA_SSM_CACHE_DTYPE="$(_ssm_dtype "")"
       ;;
     *)
       printf 'error: unknown profile: %s (expected one of: %s)\n' \
@@ -228,10 +334,16 @@ select_profile() {
   # Prefill chunk width. Raising to 8192 buys ~11% prefill and ~10% off TTFT
   # upstream, paid for out of the KV pool (~3%).
   MAX_NUM_BATCHED_TOKENS="${_ENV_MAX_NUM_BATCHED_TOKENS:-2048}"
-  # KV the derived budget aims for. Capped by HOST_RESERVE_GIB; the cap wins.
-  # 16 sits just under the cap. 22 idled the host at 6.9-8.8 GiB MemAvailable
-  # against a 6 GiB watchdog floor and the driver refused allocations there.
-  KV_TARGET_GIB="${_ENV_KV_TARGET_GIB:-16}"
+  # KV the derived budget aims for -- a WISH, not a grant. HOST_RESERVE_GIB
+  # caps the budget at MemTotal minus the reserve and the cap wins; start.sh
+  # prints "KV target X reduced to Y" whenever it binds, which on a 121.69 GiB
+  # host it always does. Upstream ships 20 and measures it clipped to
+  # 16.67 GiB over ten launches and a 45-minute soak, MemAvailable never below
+  # 13.0 GiB, 0 NV_ERR_NO_MEMORY. On a host with more memory the cap is looser
+  # and 20 may be granted in full -- HOST_RESERVE_GIB, not this line, is what
+  # protects the host. 22 idled the host at 6.9-8.8 GiB MemAvailable against a
+  # 6 GiB watchdog floor and the driver refused allocations there.
+  KV_TARGET_GIB="${_ENV_KV_TARGET_GIB:-20}"
 
   MODEL_TOTAL_BYTES="$(python3 -c \
     'import json,sys; print(json.load(open(sys.argv[1]))["total_bytes"])' \
@@ -239,6 +351,7 @@ select_profile() {
 
   export PROFILE YARN MAX_MODEL_LEN KV_CACHE_DTYPE MTP_NUM_SPECULATIVE_TOKENS
   export MAX_NUM_SEQS MAX_NUM_BATCHED_TOKENS KV_TARGET_GIB MODEL_TOTAL_BYTES
+  export MAMBA_SSM_CACHE_DTYPE
 }
 
 # --- shared helpers ----------------------------------------------------------

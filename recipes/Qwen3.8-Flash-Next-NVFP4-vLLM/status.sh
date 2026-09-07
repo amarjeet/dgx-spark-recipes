@@ -16,8 +16,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/profiles.sh"
 select_profile "$(cat "${ACTIVE_PROFILE_FILE}" 2>/dev/null || printf '%s' "${DEFAULT_PROFILE}")"
 
 printf 'experiment : %s\n' "${EXPERIMENT_NAME}"
-printf 'profile    : %s (ctx %s, kv %s, mtp %s)\n' \
-  "${PROFILE}" "${MAX_MODEL_LEN}" "${KV_CACHE_DTYPE}" "${MTP_NUM_SPECULATIVE_TOKENS}"
+printf 'profile    : %s (ctx %s, kv %s, ssm %s, mtp %s%s)\n' \
+  "${PROFILE}" "${MAX_MODEL_LEN}" "${KV_CACHE_DTYPE}" \
+  "${MAMBA_SSM_CACHE_DTYPE:-float32}" "${MTP_NUM_SPECULATIVE_TOKENS}" \
+  "${MTP_DRAFT_VOCAB:+, reduced draft head}"
 printf 'model      : %s @ %s (%s)\n' \
   "${MODEL_ID}" "${MODEL_REVISION:0:12}" "$(human_bytes "${MODEL_TOTAL_BYTES}")"
 printf 'snapshot   : %s\n' "${SNAPSHOT_DIR}"
