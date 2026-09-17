@@ -31,6 +31,17 @@ For Docker recipes, bind-mount the host path onto the *same path the tool
 defaults to inside the container*. When the mount target is already the tool's
 default, nothing needs a cache environment variable at all.
 
+**For native recipes there is no mount to redirect anything**, so each variable
+must be the one the tool itself reads — `VLLM_CACHE_ROOT`, not
+`VLLM_CACHE_HOST`; `FLASHINFER_WORKSPACE_BASE`, not `FLASHINFER_CACHE_HOST`.
+Best case, export nothing: the defaults already point at shared storage.
+
+A native recipe also loses the cgroup cap a container gets for free. On unified
+memory that matters more than anywhere else, so such a recipe must derive its
+memory budget explicitly and refuse to launch a configuration that cannot fit,
+rather than discovering it during a load. See
+`DeepSeek-V4.1-Flash-EXL3-ExLlamaV3` for a worked example.
+
 The full version of this convention, including the native (non-Docker) case, is
 packaged as an agent skill:
 [`amarjeet/agent-skills` → `dgx-spark-layout`](https://github.com/amarjeet/agent-skills/tree/main/skills/dgx-spark-layout).
@@ -59,6 +70,10 @@ it, not just this one.
 | `DRAFT_VOCAB_DIR` | `$VLLM_CACHE_HOST/draft_vocab` | *(vLLM recipes, speculative decoding)* Generated reduced draft vocabularies. Under `VLLM_CACHE_HOST` deliberately: that tree is already mounted at vLLM's in-container default, so a vocabulary there needs no mount of its own. Recipes assert the containment. |
 | `OUT_DIR` | `${XDG_STATE_HOME:-~/.local/state}/dgx-spark-recipes/<recipe>` | Bench results and verification stamps. Never inside the recipe directory. |
 | `XDG_STATE_HOME` | `~/.local/state` | Standard base for `OUT_DIR`; honored rather than assumed. |
+| `SRC_ROOT` | `~/src` | *(native recipes)* Third-party source checkouts, pinned by commit and shared across recipes. This host's existing convention; the layout skill has no row for source trees, and that silence is a cue to follow the host rather than invent a path under the workspace root. |
+| `VENV` | `~/venvs/<name>` | *(native recipes)* The virtualenv holding a source build. Several GB of torch, so it is shared rather than rebuilt per recipe, and it never lives in the recipe directory. |
+| `MODEL_ROOT` | recipe-specific, under `${DGX_SPARK_ROOT}/base-models/` | *(native recipes)* A derived, non-HF weight artifact — for example a re-laid pack. It does not go in the hub cache, which `huggingface_hub` owns and may prune. |
+| `TORCH_EXTENSIONS_DIR` | `~/.cache/torch_extensions` | PyTorch's JIT extension cache. Read only on the `cpp_extension.load()` path, so it is **inert** for an ahead-of-time `setup.py` build — set to the shared default anyway, because a recipe-private cache default is the pattern these rules exist to prevent. |
 
 **Runtime and serving.** These change how the server runs. Safe to set per
 invocation.

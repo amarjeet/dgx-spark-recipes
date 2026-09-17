@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Copyright (C) 2026 Victor Cruz
+# Copyright (C) 2026 amarjeet
+#
+# Derived from one-spark-tp1/tabbyapi/config.yml of
+# vcruz305/DeepSeek-V4.1-Flash-EXL3-DGX-Spark-recipe, which is
+# Copyright (C) 2026 Victor Cruz and licensed AGPL-3.0-only.
+# Modified 2026-09-17 by amarjeet: upstream committed an absolute path to a
+# specific person's home directory (`model_dir: /home/markus/models`). This is a
+# TEMPLATE -- start.sh renders the @PLACEHOLDER@ tokens from profiles.sh, so the
+# paths follow MODEL_ROOT and nothing machine-specific is committed.
+#
+# TabbyAPI config for DeepSeek-V4.1-Flash EXL3 on ONE DGX Spark (GB10), TP1.
+#
+# STATUS: configuration guidance. This has NOT been run end-to-end against this
+# pack on a Spark, by upstream or by this port. No TabbyAPI throughput numbers
+# are published here. See ../README.md and tabbyapi/README.md.
+#
+# Key names are taken from TabbyAPI's own config_sample.yml. Values match the
+# measured-best native-ExLlamaV3 configuration in ../BENCHMARKS.md.
+#
+# IMPORTANT: TabbyAPI does not know about the ATS zero-copy environment
+# variables. start.sh exports them before launching; if you run TabbyAPI by
+# hand, export them yourself or the model is copied wholesale and will not fit.
+#
+#   export EXL3_ATS_MMAP=1
+#   export EXL3_ATS_COPY='^(?!mtp\.)'
+#   export EXL3_DSPARK_CONF=0.7
+
+network:
+  host: @HOST@
+  port: @PORT@
+  # Rendered from TABBY_DISABLE_AUTH, default 1. TabbyAPI's own default is
+  # false, which generates api_tokens.yml in its working directory and makes
+  # every unauthenticated request 401 -- including scripts/smoke.py. This
+  # recipe defaults HOST to 127.0.0.1 precisely so auth can be off without
+  # exposing anything; set TABBY_DISABLE_AUTH=0 if you bind it wider, and note
+  # that start.sh refuses a non-loopback HOST with auth disabled.
+  disable_auth: @DISABLE_AUTH@
+
+model:
+  # Rendered from $(dirname "$MODEL_ROOT") -- the workspace base-models tree.
+  model_dir: @MODEL_DIR@
+
+  # The 64-byte re-laid pack built by ../relay.sh. A pack that has NOT been
+  # re-laid will load, but most tensors are copied instead of aliased and it
+  # will not fit. Rendered from $(basename "$MODEL_ROOT").
+  model_name: @MODEL_NAME@
+
+  # Matches the context used for the measured numbers.
+  max_seq_len: @CTX@
+  cache_size: @CTX@
+
+  # FP16 KV. The measured native runs used the default cache dtype; quantized
+  # KV (e.g. "8,8") is untested for this pack on this hardware.
+  cache_mode: FP16
+
+  # 2048 is correct once the model is resident in CUDA memory. 4096 measured
+  # faster while the weights were still aliased, but does not fit with the model
+  # copied in -- so the `aliased` profile renders 4096 here and `measured` 2048.
+  chunk_size: @CHUNK@
+
+  max_batch_size: 1
+
+  # This pack ships NO chat template -- its tokenizer_config.json is 801 bytes
+  # with no `chat_template` key -- and TabbyAPI bundles only alpaca, chatml and
+  # lfm2. Without one, /v1/chat/completions fails while /v1/completions works.
+  # Rendered from PROMPT_TEMPLATE; the line is omitted entirely when unset.
+  @PROMPT_TEMPLATE_LINE@
+
+  # Single Spark, single CUDA device. ExLlamaV3 tensor parallelism is
+  # single-host only and is not used here.
+  tensor_parallel: false
+
+  # One device, so autosplit has nothing to split.
+  gpu_split_auto: false
+  gpu_split: []
+
+  # Text only. The measured configuration does not load the vision tower.
+  vision: false
+
+draft_model:
+  # The DSpark drafter for this model is the MTP head carried inside the same
+  # pack as `mtp.*` tensors, not a separate draft model directory. TabbyAPI
+  # exposes this as draft_mode "mtp". Rendered to `null` by the `nodraft`
+  # profile, which copies every tensor including the drafter.
+  #
+  # UNVERIFIED: whether TabbyAPI's "mtp" mode requires draft_model_name to be
+  # set when the MTP head lives inside the main pack. If it errors asking for a
+  # draft model, set draft_model_dir and draft_model_name to the same values as
+  # the model section above.
+  draft_mode: @DRAFT_MODE@
+
+  draft_cache_mode: FP16
+
+  # ExLlamaV3 applies a mode-specific default when unset. The native runs used a
+  # DSpark block size of 5 with a confidence gate of 0.7 (EXL3_DSPARK_CONF,
+  # exported by start.sh).
+  draft_num_tokens:
+
+  # Leave off for a first boot so behaviour matches the measured configuration.
+  dynamic_draft: false
+
+logging:
+  log_prompt: false
+  log_generation_params: false
+  log_requests: false

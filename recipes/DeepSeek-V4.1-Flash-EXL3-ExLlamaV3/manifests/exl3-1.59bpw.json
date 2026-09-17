@@ -1,0 +1,182 @@
+{
+  "SPDX-License-Identifier": "AGPL-3.0-only",
+  "_copyright": [
+    "Copyright (C) 2026 amarjeet",
+    "Written for this port. Part of the same AGPL-3.0-only combined work as the files it sits beside, which derive from vcruz305/DeepSeek-V4.1-Flash-EXL3-DGX-Spark-recipe, Copyright (C) 2026 Victor Cruz."
+  ],
+  "schema_version": 1,
+  "repo": "vcruz305/DSV4.1-Flash-SAGE-EXL3-1.59bpw",
+  "revision": "0c29707b4fbcdd2e7ce61bc336dd355d6a9e1994",
+  "quantization": "EXL3-1.59bpw",
+  "total_bytes": 330406735253,
+  "reserve_bytes": 10737418240,
+  "files": [
+    {
+      "path": ".gitattributes",
+      "bytes": 1584,
+      "sha256": "c96667522371c060c119874628058a5d62f0277ab322a30f717a42b20c92204b",
+      "etag": "495a7175bb7b0b48bd0ac67d86f3e0c900127a71",
+      "lfs": false
+    },
+    {
+      "path": "README.md",
+      "bytes": 6168,
+      "sha256": "d4424e504f46c01478a7f5ca7290ae1c5d0763e178b27f9b7e3a2d81c1f4cb37",
+      "etag": "cf7630b42a157dc5830fc3ea7ef7da01d356ce75",
+      "lfs": false
+    },
+    {
+      "path": "config.json",
+      "bytes": 3170,
+      "sha256": "25882944c203b1970a9187dc47334ebafbb7e95ffda888fd86c8181af9e15867",
+      "etag": "b9edb267a3eabe8fcc13510cd55a05a484f8937d",
+      "lfs": false
+    },
+    {
+      "path": "model-00001-of-00017.safetensors",
+      "bytes": 8590615296,
+      "sha256": "12a14d15a96c3d72bad8dbcf5fd5e28d138496e2771aba0f7532f6c08c9e7984",
+      "etag": "12a14d15a96c3d72bad8dbcf5fd5e28d138496e2771aba0f7532f6c08c9e7984",
+      "lfs": true
+    },
+    {
+      "path": "model-00002-of-00017.safetensors",
+      "bytes": 8591197444,
+      "sha256": "67ff0261bcc469fcd45e010b047524b5422d319f3fead370cd626cebd4f5e5a5",
+      "etag": "67ff0261bcc469fcd45e010b047524b5422d319f3fead370cd626cebd4f5e5a5",
+      "lfs": true
+    },
+    {
+      "path": "model-00003-of-00017.safetensors",
+      "bytes": 8590158560,
+      "sha256": "6a86b5c5f8ce45ad086683fe3384d490d1a6bab8ff76d8a5463895fad1dfea1b",
+      "etag": "6a86b5c5f8ce45ad086683fe3384d490d1a6bab8ff76d8a5463895fad1dfea1b",
+      "lfs": true
+    },
+    {
+      "path": "model-00004-of-00017.safetensors",
+      "bytes": 8590455704,
+      "sha256": "efcb979072f50aa4407a3222f2ebcee8c06c041d9d0377f6910a50209f31e13d",
+      "etag": "efcb979072f50aa4407a3222f2ebcee8c06c041d9d0377f6910a50209f31e13d",
+      "lfs": true
+    },
+    {
+      "path": "model-00005-of-00017.safetensors",
+      "bytes": 8590832100,
+      "sha256": "1f901f386710b30eb5389894f828227d8ee89a34bd6867a440b461522b0723e3",
+      "etag": "1f901f386710b30eb5389894f828227d8ee89a34bd6867a440b461522b0723e3",
+      "lfs": true
+    },
+    {
+      "path": "model-00006-of-00017.safetensors",
+      "bytes": 8591166660,
+      "sha256": "73f1cc09166201ba9e6f9e0bab43b3f4e57f99757aac00a4e30aad97e9f39781",
+      "etag": "73f1cc09166201ba9e6f9e0bab43b3f4e57f99757aac00a4e30aad97e9f39781",
+      "lfs": true
+    },
+    {
+      "path": "model-00007-of-00017.safetensors",
+      "bytes": 8591158076,
+      "sha256": "2083a4bff9e3cb9f8df186626235d6771a46489db8d08d6b0882c2cb375a864e",
+      "etag": "2083a4bff9e3cb9f8df186626235d6771a46489db8d08d6b0882c2cb375a864e",
+      "lfs": true
+    },
+    {
+      "path": "model-00008-of-00017.safetensors",
+      "bytes": 8588074648,
+      "sha256": "8479bcc6d5e42d9ab2125e2af77b2e120b127585ecbf2b9320b50dcb5f6be5e3",
+      "etag": "8479bcc6d5e42d9ab2125e2af77b2e120b127585ecbf2b9320b50dcb5f6be5e3",
+      "lfs": true
+    },
+    {
+      "path": "model-00009-of-00017.safetensors",
+      "bytes": 8590644144,
+      "sha256": "b97f6d9ec868cc984c3ca0a0527003d2a4ee378fb6e3a20c1633ef077ba791ea",
+      "etag": "b97f6d9ec868cc984c3ca0a0527003d2a4ee378fb6e3a20c1633ef077ba791ea",
+      "lfs": true
+    },
+    {
+      "path": "model-00010-of-00017.safetensors",
+      "bytes": 8590228384,
+      "sha256": "2d2c732af1cebd65196ac346a943d3b331227e99b2718bd79ef69268c629d24d",
+      "etag": "2d2c732af1cebd65196ac346a943d3b331227e99b2718bd79ef69268c629d24d",
+      "lfs": true
+    },
+    {
+      "path": "model-00011-of-00017.safetensors",
+      "bytes": 8591063768,
+      "sha256": "b9119db242a4d78115128065ac5410a9df6e32fa030413844301117eae2e5edf",
+      "etag": "b9119db242a4d78115128065ac5410a9df6e32fa030413844301117eae2e5edf",
+      "lfs": true
+    },
+    {
+      "path": "model-00012-of-00017.safetensors",
+      "bytes": 8591368252,
+      "sha256": "211f281f695ec774f1a90d91fb3819b88b9ce554e0ddc943750cc023ccf8a2ed",
+      "etag": "211f281f695ec774f1a90d91fb3819b88b9ce554e0ddc943750cc023ccf8a2ed",
+      "lfs": true
+    },
+    {
+      "path": "model-00013-of-00017.safetensors",
+      "bytes": 8587070596,
+      "sha256": "064333e181d137581d2f609565f672e23bdccf3a74f8b46fdf3374862d875f84",
+      "etag": "064333e181d137581d2f609565f672e23bdccf3a74f8b46fdf3374862d875f84",
+      "lfs": true
+    },
+    {
+      "path": "model-00014-of-00017.safetensors",
+      "bytes": 8588395376,
+      "sha256": "a3efd7fb48e563a227618960ca99391dc037bd3f1e4128e21d0a476eaded2ee7",
+      "etag": "a3efd7fb48e563a227618960ca99391dc037bd3f1e4128e21d0a476eaded2ee7",
+      "lfs": true
+    },
+    {
+      "path": "model-00015-of-00017.safetensors",
+      "bytes": 7050424624,
+      "sha256": "234215b7546ff4d316ec3df25e94b19a45b82dea25f7818d8874adad07c79807",
+      "etag": "234215b7546ff4d316ec3df25e94b19a45b82dea25f7818d8874adad07c79807",
+      "lfs": true
+    },
+    {
+      "path": "model-00016-of-00017.safetensors",
+      "bytes": 101535150936,
+      "sha256": "824db4881320407ac340736d14dcee5ecd748c27d0f5836b8127ecc2e3781b0f",
+      "etag": "824db4881320407ac340736d14dcee5ecd748c27d0f5836b8127ecc2e3781b0f",
+      "lfs": true
+    },
+    {
+      "path": "model-00017-of-00017.safetensors",
+      "bytes": 101537926640,
+      "sha256": "976330f4954338e1ad8b508c32aa912032c7ad908959fd53c8307650fe4520ed",
+      "etag": "976330f4954338e1ad8b508c32aa912032c7ad908959fd53c8307650fe4520ed",
+      "lfs": true
+    },
+    {
+      "path": "model.safetensors.index.json",
+      "bytes": 14425065,
+      "sha256": "d415ffdb769651cbd0f089a24ac251a4419f4e98c7340d8ba7a6dd197f1d7b17",
+      "etag": "d415ffdb769651cbd0f089a24ac251a4419f4e98c7340d8ba7a6dd197f1d7b17",
+      "lfs": true
+    },
+    {
+      "path": "tokenizer.json",
+      "bytes": 6367257,
+      "sha256": "c90dfa01249db1be4245780a052ede752e1361c612ac6d08e2bdada7d599476b",
+      "etag": "6a15814dd25c934028034531da744c689f87ff21",
+      "lfs": false
+    },
+    {
+      "path": "tokenizer_config.json",
+      "bytes": 801,
+      "sha256": "6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547",
+      "etag": "f3dad388a2bbfd6a8605bd02754acd86d9ca5112",
+      "lfs": false
+    }
+  ],
+  "tensor_bytes": {
+    "_comment": "Measured from the safetensors header of every shard at this revision. text = backbone + routed experts, made resident; mtp = the DSpark drafter, left aliased by the `measured` profile; engram = tables the model card states are read from disk rather than made resident.",
+    "text": 119360343488,
+    "mtp": 7932874632,
+    "engram": 203073076240
+  }
+}

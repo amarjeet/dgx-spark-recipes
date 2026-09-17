@@ -1,0 +1,11 @@
+# Runtime state, written next to the recipe that produced it.
+.tabby.log
+.tabby.pid
+.profile.active
+
+# Python
+__pycache__/
+*.py[cod]
+
+# TabbyAPI writes this into its working directory when auth is enabled.
+api_tokens.yml
