@@ -88,7 +88,7 @@ llama.cpp fork.
 | `deep` | PQ2_0 | 6.70 GiB | 262144 | 1 | 262144 | 36.4 GiB | — | One full-context slot, when four slots' worth of KV is not wanted. |
 | `long` | PQ2_0 | 6.70 GiB | 131072 | 1 | 131072 | 28.4 GiB | — | What upstream's own launcher auto-picks for a 27B on a box this size. |
 | `safe` | PQ2_0 | 6.70 GiB | 262144 | 4 | 65536 | 36.9 GiB | **28.7 GiB** | Four slots, each below every depth #27756 reports failing, and under 90 s to fill one. |
-| `ptq1` | PTQ1_0 | ~5.5 GiB | 262144 | 1 | 262144 | 35.3 GiB | — | Smallest footprint. Unmeasured on GB10 — see [Packings](#packings). |
+| `ptq1` | PTQ1_0 | 5.53 GiB | 262144 | 1 | 262144 | 35.3 GiB | — | 16% faster decode, 56% slower prefill. Right for short prompts, wrong for deep ones — see [Packings](#packings). |
 
 `CTX_SIZE` is the **total** context, divided across slots — that is llama.cpp's
 own semantics (`n_ctx_seq = n_ctx / n_seq_max`), not a convention of this
@@ -293,17 +293,42 @@ PTQ1_0 moves 17% less weight data per decode step but pays arithmetic to unpack
 dense trits, so it wins where bandwidth binds and loses where instruction
 throughput does.
 
-The model card says PQ2_0 wins decode on "the Blackwell cards" — but it
-measured RTX 5090 and RTX PRO 6000, parts with roughly 6× GB10's memory
-bandwidth, where batch-1 decode is limited by instruction throughput rather
-than memory. Inheriting that answer here would be a category error. GB10's
-achieved 208 GB/s puts it nearest upstream's **L4** row (~300 GB/s, 29.8 t/s
-PQ2_0 — almost identical to what this box measures), where PTQ1_0 won decode by
-7.7% **and lost 40% of prompt processing**.
+The model card says PQ2_0 is "the faster decode on ... the Blackwell cards".
+**That is wrong for GB10**, and `./bench.sh packs` says so on this box:
 
-Since prefill is the binding cost at any real depth, PQ2_0 stays the default.
-`./bench.sh packs` measures both here rather than transferring the card's
-answer.
+| Pack | Resident | pp512 | tg128 |
+|---|---:|---:|---:|
+| PQ2_0 | 6.70 GiB | **1033.67 ± 14.25** | 29.57 ± 0.04 |
+| PTQ1_0 | 5.53 GiB | 457.19 ± 2.55 | **34.27 ± 0.07** |
+
+PTQ1_0 decodes **16% faster** and prefills **56% slower**, and saves 1.17 GiB.
+
+The card's guidance was measured on RTX 5090 and RTX PRO 6000 — parts with
+roughly 6× GB10's memory bandwidth, where batch-1 decode is limited by
+instruction throughput rather than memory, so unpacking dense trits costs more
+than the traffic it saves. GB10's achieved 208 GB/s puts it with upstream's
+**L4** row instead (~300 GB/s, 29.8 t/s PQ2_0 — nearly identical to this box),
+where PTQ1_0 also won decode. Calling GB10 "Blackwell" and inheriting the
+5090's answer is a category error; the architecture name is not the thing that
+decides this, the bandwidth is.
+
+**Which to use.** For a request with `P` prompt tokens and `G` generated
+tokens, PTQ1_0 is faster when
+
+```
+G / P  >  0.26          (from 1/29.57 - 1/34.27  vs  1/457.19 - 1/1033.67)
+```
+
+That threshold is lower than it looks, because this is a thinking model: at the
+default `xhigh` effort it routinely spends one to two thousand tokens reasoning
+before answering. So **PTQ1_0 is the better pick for short-prompt interactive
+chat** — a 1,000-token prompt needs only ~260 generated tokens to favour it.
+
+At depth the conclusion flips hard. A 100k-token prompt would need 26k
+generated tokens to pay back PTQ1_0's prefill, which will not happen. Since
+this recipe exists for long context, **PQ2_0 stays the default** — but `ptq1`
+is a real option, not a footnote, and it is the faster one for the workload
+most people try first.
 
 ## Thinking, tool calling, vision
 
@@ -399,8 +424,6 @@ server does not survive a reboot — start it again with `./start.sh`.
   `./bench.sh needle` with your own `DEPTHS` is how to narrow it.
 - **Why the decode slope is so steep** — 31% of the shallow rate at 254k, when
   only 16 of 64 blocks attend over the context. Not investigated.
-- Whether PTQ1_0 beats PQ2_0 on decode here, against the card's guidance.
-  `./bench.sh packs` answers it; `ptq1` is not downloaded by default.
 - Whether all four slots hold full context *simultaneously* under real
   concurrent load. The geometry is served and the arithmetic fits, but the
   sweep above drove one slot at a time.

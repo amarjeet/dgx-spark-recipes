@@ -185,7 +185,7 @@ RECURRENT_BYTES_PER_SLOT=155713536
 #   deep   PQ2_0    262144 over 1 slot                  ~36 GiB
 #   long   PQ2_0    131072 over 1 slot                  ~28 GiB
 #   safe   PQ2_0    262144 over 4 slots =  65536 each   ~37 GiB   known-good
-#   ptq1   PTQ1_0   262144 over 1 slot                  ~35 GiB
+#   ptq1   PTQ1_0   262144 over 1 slot                  ~35 GiB   faster decode
 #
 # (Budgets include an 8 GiB -cram checkpoint cache and a 5 GiB compute reserve,
 # so they are floors with slack, not tight fits. ./preflight.sh prints the
@@ -225,17 +225,24 @@ RECURRENT_BYTES_PER_SLOT=155713536
 # trustworthy without re-testing.
 # ===========================================================================
 #
-# On the packings: PQ2_0 (2.13 bpw) and PTQ1_0 (1.75 bpw) are a genuine trade,
-# not an ordering. PTQ1_0 moves 17% less weight data per decode step but pays
-# arithmetic to unpack dense trits, so it wins where memory bandwidth binds and
-# loses where instruction throughput does. The model card measured PQ2_0 ahead
-# on RTX 5090 and RTX PRO 6000 and calls them "the Blackwell cards", but those
-# parts have roughly 6x GB10's bandwidth: inheriting their answer here is a
-# category error. The closest analogue in upstream's own table is the L4, at a
-# similar ~300 GB/s and a near-identical 29.8 t/s PQ2_0, where PTQ1_0 won
-# decode by 7.7% -- and halved prompt processing. Since prefill is the binding
-# cost at any real depth, PQ2_0 stays the default. ./bench.sh packs measures it
-# here rather than transferring the card's answer.
+# On the packings: the model card calls PQ2_0 "the faster decode on ... the
+# Blackwell cards". That is WRONG for GB10, and ./bench.sh packs measured it
+# here rather than inheriting the claim:
+#
+#   PQ2_0   6.70 GiB   pp512 1033.67 t/s   tg128 29.57 t/s
+#   PTQ1_0  5.53 GiB   pp512  457.19 t/s   tg128 34.27 t/s
+#
+# PTQ1_0 decodes 16% faster and prefills 56% slower. The card's figures came
+# from RTX 5090 and RTX PRO 6000, parts with ~6x GB10's bandwidth, where
+# batch-1 decode is limited by instruction throughput rather than memory --
+# inheriting their answer here is a category error, since bandwidth decides
+# this and not the architecture name.
+#
+# For a request with P prompt and G generated tokens, PTQ1_0 wins when
+# G/P > 0.26, which a thinking model at xhigh effort clears easily on short
+# prompts. At depth it never does: a 100k prompt would need 26k generated
+# tokens to pay back the prefill. PQ2_0 stays the default because this recipe
+# exists for long context, but ptq1 is the right pick for short-prompt chat.
 
 DEFAULT_PROFILE="${DEFAULT_PROFILE:-wide}"
 KNOWN_PROFILES=(wide deep long safe ptq1)
