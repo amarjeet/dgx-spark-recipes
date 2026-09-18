@@ -117,8 +117,15 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-$(basename "${MODEL_ROOT}")}"
 # The pack ships NO chat template: tokenizer_config.json for this revision is
 # 801 bytes and has no `chat_template` key, and TabbyAPI ships only alpaca,
 # chatml and lfm2. Without one, /v1/chat/completions fails while /v1/completions
-# works. Point this at a DeepSeek-V4.1 jinja template to enable chat.
-PROMPT_TEMPLATE="${PROMPT_TEMPLATE:-}"
+# works.
+#
+# DeepSeek publish none either -- the V4.1-Flash model card says outright that
+# "this release does not include a Jinja-format chat template", shipping a
+# Python reference encoder instead. tabbyapi/deepseek-v4.1-chat.jinja is derived
+# from that encoder for the chat (non-thinking) path and is verified against it
+# by differential test; see the header of that file for what it does not cover.
+# Set PROMPT_TEMPLATE= (empty) to serve /v1/completions only.
+PROMPT_TEMPLATE="${PROMPT_TEMPLATE-${EXPERIMENT_DIR}/tabbyapi/deepseek-v4.1-chat.jinja}"
 
 # --- runtime pins ------------------------------------------------------------
 
@@ -149,6 +156,11 @@ HOST="${HOST:-127.0.0.1}"
 
 # There is no API key by default; see TABBY_DISABLE_AUTH below and README.md.
 TABBY_DISABLE_AUTH="${TABBY_DISABLE_AUTH:-1}"
+
+# start.sh refuses to serve without auth on anything but loopback. Set this to
+# 1 to override that and bind a keyless server to a routable address -- only
+# sane on a network you control, and never on an untrusted one.
+TABBY_ALLOW_INSECURE_BIND="${TABBY_ALLOW_INSECURE_BIND:-0}"
 
 # The load drives MemAvailable to roughly 5 GiB by design. Refuse to start below
 # this, rather than taking the host down: on unified memory exhausting the pool
@@ -421,4 +433,15 @@ PYEOF
     --manifest "${MANIFEST}" --hf-home "${HF_HOME}" --verify-only
   mkdir -p "${OUT_DIR}"
   printf '%s' "${fingerprint}" >"${stamp}"
+}
+
+# HF_TOKEN if exported, else the token `hf auth login` writes to the standard
+# location. This pack is public and ungated, so an empty token is not an error
+# -- it only lowers the Hub rate limit.
+resolve_hf_token() {
+  if [[ -z "${HF_TOKEN:-}" ]]; then
+    local token_file="${HF_TOKEN_PATH:-${HF_HOME}/token}"
+    [[ -r "${token_file}" ]] && HF_TOKEN="$(tr -d '[:space:]' <"${token_file}")"
+  fi
+  export HF_TOKEN="${HF_TOKEN:-}"
 }

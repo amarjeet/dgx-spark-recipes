@@ -306,11 +306,17 @@ Two this port adds:
   from reading the loader. **Verify after the first load** by printing
   `config.stc.ats_bytes` and checking `copied` is ~0.3 GiB rather than 0; the
   worst case if the reasoning is wrong is that the loader copies 300 MiB.
-- **No chat template.** The pack's `tokenizer_config.json` is 801 bytes with no
-  `chat_template`, and TabbyAPI bundles only alpaca, chatml and lfm2. Until you
-  set `PROMPT_TEMPLATE` to a DeepSeek-V4.1 jinja template,
-  `/v1/chat/completions` fails while `/v1/completions` works. `preflight.sh`
-  warns; `scripts/smoke.py` uses chat and will surface it immediately.
+- **Chat template is ours, and partial.** The pack's `tokenizer_config.json` is
+  801 bytes with no `chat_template`, DeepSeek publish no Jinja template for
+  V4.1 at all (the model card says so and ships a Python reference encoder
+  instead), and TabbyAPI bundles only alpaca, chatml and lfm2.
+  `tabbyapi/deepseek-v4.1-chat.jinja` is derived from that encoder and is the
+  `PROMPT_TEMPLATE` default. It covers `thinking_mode="chat"` with string
+  content — system/user/assistant, multi-turn, generation prompt — and matched
+  the encoder on 18/18 conversation shapes plus upstream's published vectors.
+  It does **not** cover thinking mode, tool calls, images, `latest_reminder` or
+  the `task`/`mask` fields; those raise rather than mis-encode. Set
+  `PROMPT_TEMPLATE=` (empty) to serve `/v1/completions` only.
 
 ## Security
 
@@ -320,7 +326,11 @@ writes an `api_tokens.yml` into its working directory and 401s every
 unauthenticated request including the smoke test.
 
 `start.sh` refuses to start with auth disabled and a non-loopback `HOST`. If you
-bind wider, set `TABBY_DISABLE_AUTH=0` and pass the generated key yourself.
+bind wider, set `TABBY_DISABLE_AUTH=0` and pass the generated key yourself. If
+you genuinely want a keyless server on a network you control,
+`TABBY_ALLOW_INSECURE_BIND=1` turns that refusal into a warning — it exists so
+the choice is stated, not stumbled into. Never set it on an untrusted network:
+anyone who can route to the port can use the model, with `allowed_origins` open.
 
 ## Deviations from `CONVENTIONS.md`
 

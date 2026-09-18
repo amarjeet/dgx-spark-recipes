@@ -35,9 +35,10 @@ are symlinks back into these blobs, so pruning the hub cache breaks the re-laid
 pack as well.
 
 Downloads resume: a partial blob is kept at `<etag>.incomplete` and continued
-with a Range request. Every file is verified by size and SHA-256 before it is
-linked into the snapshot, so an interrupted transfer can never present itself
-as a complete checkpoint.
+with a Range request, retried in place until the shard is whole -- a link that
+truncates response bodies costs seconds rather than the whole shard. Every file
+is verified by size and SHA-256 before it is linked into the snapshot, so an
+interrupted transfer can never present itself as a complete checkpoint.
 
 Usage:
   ./scripts/download_snapshot.py --manifest manifests/exl3-1.59bpw.json
@@ -47,6 +48,7 @@ Usage:
 import argparse
 import concurrent.futures
 import hashlib
+import http.client
 import json
 import os
 import shutil
@@ -57,6 +59,8 @@ import urllib.error
 import urllib.request
 
 CHUNK = 8 * 1024 * 1024
+BLOB_STALL_LIMIT = 8      # consecutive no-progress attempts before failing
+BLOB_BACKOFF_CAP = 60.0   # seconds between those attempts, at most
 _print_lock = threading.Lock()
 
 
@@ -92,7 +96,15 @@ def open_url(url: str, token: str, offset: int = 0):
 
 def fetch_blob(url: str, blob: str, expect_bytes: int, expect_sha: str,
                token: str, label: str) -> None:
-    """Download `url` to `blob`, resuming and verifying. No-op if already good."""
+    """Download `url` to `blob`, resuming and verifying. No-op if already good.
+
+    A truncated body is the normal case on a slow link, not a failure: the
+    server ends the response early and `copyfileobj` simply returns short. Each
+    attempt therefore re-issues a Range request from whatever is already on
+    disk. Only attempts that add *no* bytes count against the stall limit, so a
+    transfer that is merely slow keeps going indefinitely while a genuinely
+    dead one gives up in about four minutes.
+    """
     if os.path.exists(blob):
         if os.path.getsize(blob) == expect_bytes:
             return
@@ -100,24 +112,52 @@ def fetch_blob(url: str, blob: str, expect_bytes: int, expect_sha: str,
         os.remove(blob)
 
     partial = f"{blob}.incomplete"
-    offset = os.path.getsize(partial) if os.path.exists(partial) else 0
-    if offset > expect_bytes:
-        os.remove(partial)
-        offset = 0
-
-    if offset < expect_bytes:
-        started = time.monotonic()
-        response = open_url(url, token, offset)
-        # A server that ignores Range replies 200 and restarts the body at 0;
-        # appending it to what we already have would silently corrupt the blob.
-        if offset and response.status != 206:
+    stalled = 0
+    while True:
+        offset = os.path.getsize(partial) if os.path.exists(partial) else 0
+        if offset > expect_bytes:
+            os.remove(partial)
             offset = 0
-        mode = "ab" if offset else "wb"
-        with response, open(partial, mode) as out:
-            shutil.copyfileobj(response, out, CHUNK)
-        done = os.path.getsize(partial)
-        rate = (done - offset) / max(time.monotonic() - started, 1e-9)
-        say(f"  fetched {label}  {human(done)}  ({human(rate)}/s)")
+        if offset == expect_bytes:
+            break
+
+        # Progress is measured against this, not against `offset`, which the
+        # non-206 branch below rewinds to 0. A server that ignores Range and
+        # truncates would otherwise re-send the same opening bytes forever and
+        # look like progress on every attempt.
+        had = offset
+        started = time.monotonic()
+        try:
+            response = open_url(url, token, offset)
+            # A server that ignores Range replies 200 and restarts the body at
+            # 0; appending it to what we already have would silently corrupt
+            # the blob, so start the file over instead.
+            if offset and response.status != 206:
+                offset = 0
+            mode = "ab" if offset else "wb"
+            with response, open(partial, mode) as out:
+                shutil.copyfileobj(response, out, CHUNK)
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+            reason = str(exc) or exc.__class__.__name__
+        else:
+            reason = "body ended early"
+
+        done = os.path.getsize(partial) if os.path.exists(partial) else 0
+        if done > had:
+            stalled = 0
+            rate = (done - offset) / max(time.monotonic() - started, 1e-9)
+            say(f"  {label}  {human(done)}/{human(expect_bytes)}"
+                f"  ({100 * done / expect_bytes:.1f}%, {human(rate)}/s)")
+        else:
+            stalled += 1
+            if stalled >= BLOB_STALL_LIMIT:
+                raise IOError(
+                    f"{label}: no progress in {stalled} attempts at "
+                    f"{human(done)}/{human(expect_bytes)} -- {reason}")
+            delay = min(2.0 ** stalled, BLOB_BACKOFF_CAP)
+            say(f"  {label}  stalled at {human(done)} ({reason});"
+                f" retry {stalled}/{BLOB_STALL_LIMIT} in {delay:.0f}s")
+            time.sleep(delay)
 
     size = os.path.getsize(partial)
     if size != expect_bytes:

@@ -1,0 +1,52 @@
+{#-
+SPDX-License-Identifier: AGPL-3.0-only
+
+Copyright (C) 2026 amarjeet
+
+DeepSeek-V4.1 prompt format, chat (non-thinking) mode.
+
+Derived from the reference encoder `encoding/encoding.py` of
+deepseek-ai/DeepSeek-V4.1-Flash, Copyright (C) 2026 DeepSeek, MIT licensed.
+MIT permits use inside this AGPL-3.0-only combined work; nothing here may be
+copied back out under MIT.
+
+Why this file exists: the model card states plainly that "this release does not
+include a Jinja-format chat template", and this pack's tokenizer_config.json has
+no `chat_template` key. Without a template TabbyAPI serves /v1/completions only
+and every /v1/chat/completions request fails.
+
+Scope -- this covers `thinking_mode="chat"` with string content only:
+  system / user / assistant turns, multi-turn, generation prompt.
+It does NOT cover thinking mode (`<｜Assistant｜><think>` plus the
+"Reasoning Effort: N" preamble), tool calls and their DSML encoding, images,
+`latest_reminder`, or the `task`/`mask` quick-instruction fields. Those need
+upstream's encoder or the deepseek-recipe toolkit; a request using them is
+rejected below rather than silently mis-encoded.
+
+Note that historical `reasoning_content` is deliberately dropped and replaced by
+a bare `</think>`, which is what upstream's encoder does for past turns.
+
+Verified against upstream by differential test: 18/18 conversation shapes match
+`encode_messages(..., thinking_mode="chat")` exactly, plus published vector
+tests/test_output_2.txt and the two chat-mode assertions in test_encoding.py.
+The tokenizer sets add_bos_token=false, so this template emits BOS itself.
+-#}
+{%- if not add_generation_prompt is defined -%}{%- set add_generation_prompt = false -%}{%- endif -%}
+{{- '<｜begin▁of▁sentence｜>' -}}
+{%- for message in messages -%}
+    {%- if message['content'] is not string -%}
+        {{- raise_exception('DeepSeek-V4.1 chat template: content must be a string; images and tool calls are not supported here -- see deepseek-ai/DeepSeek-V4.1-Flash encoding/encoding.py') -}}
+    {%- endif -%}
+    {%- if message['role'] == 'system' -%}
+        {{- '<｜System｜>' + message['content'] -}}
+    {%- elif message['role'] == 'user' -%}
+        {{- '<｜User｜>' + message['content'] -}}
+    {%- elif message['role'] == 'assistant' -%}
+        {{- '<｜Assistant｜></think>' + message['content'] + '<｜end▁of▁sentence｜>' -}}
+    {%- else -%}
+        {{- raise_exception('DeepSeek-V4.1 chat template: unsupported role "' + message['role'] + '"; only system, user and assistant are encoded here') -}}
+    {%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    {{- '<｜Assistant｜></think>' -}}
+{%- endif -%}

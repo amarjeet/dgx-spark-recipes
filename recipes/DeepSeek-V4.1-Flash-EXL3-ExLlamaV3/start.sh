@@ -108,7 +108,15 @@ ok "config rendered: ${RENDERED_CONFIG}"
 if (( TABBY_DISABLE_AUTH )); then
   case "${HOST}" in
     127.0.0.1|localhost|::1) ok "auth disabled, bound to loopback only" ;;
-    *) err "TABBY_DISABLE_AUTH=1 with HOST=${HOST} would expose an unauthenticated server; set HOST=127.0.0.1 or TABBY_DISABLE_AUTH=0" ;;
+    *)
+      # Deliberately opt-out-able: an unauthenticated bind is a real choice on a
+      # trusted network, but it must be stated rather than reached by accident.
+      if (( TABBY_ALLOW_INSECURE_BIND )); then
+        warn "auth disabled and bound to ${HOST}: anyone who can route here can use this model, with no key and CORS open"
+      else
+        err "TABBY_DISABLE_AUTH=1 with HOST=${HOST} would expose an unauthenticated server; set HOST=127.0.0.1, or TABBY_DISABLE_AUTH=0, or TABBY_ALLOW_INSECURE_BIND=1 to accept that"
+      fi
+      ;;
   esac
 else
   warn "auth enabled: TabbyAPI writes api_tokens.yml in ${TABBY_DIR}; smoke.py will 401 without a key"

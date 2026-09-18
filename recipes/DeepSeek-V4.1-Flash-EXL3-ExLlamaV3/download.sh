@@ -44,6 +44,9 @@ printf 'manifest  : %s\n' "${MANIFEST}"
 printf 'HF_HOME   : %s\n' "${HF_HOME}"
 printf 'size      : %s\n\n' "$(human_bytes "${MODEL_TOTAL_BYTES}")"
 
+resolve_hf_token
+[[ -n "${HF_TOKEN}" ]] || printf 'note: HF_TOKEN is empty; this pack is public, but anonymous Hub access has lower rate limits\n' >&2
+
 mkdir -p "${HF_HOME}" "${OUT_DIR}"
 
 attempt=1
