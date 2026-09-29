@@ -40,7 +40,14 @@ A native recipe also loses the cgroup cap a container gets for free. On unified
 memory that matters more than anywhere else, so such a recipe must derive its
 memory budget explicitly and refuse to launch a configuration that cannot fit,
 rather than discovering it during a load. See
-`DeepSeek-V4.1-Flash-EXL3-ExLlamaV3` for a worked example.
+`DeepSeek-V4.1-Flash-EXL3-ExLlamaV3` and
+`Ternary-Bonsai-2-27B-GGUF-llamacpp-prism` for worked examples (in the latter,
+`budget_bytes` in its `profiles.sh`, itemised by `preflight.sh`).
+
+Where a recipe has to *build* its runtime rather than pull it, the checkout is
+third-party source shared across recipes, not recipe data: it belongs under
+`SRC_ROOT` (this host's existing `~/src` convention), and the binaries are run
+out of the build tree so nothing is copied into the recipe directory.
 
 The full version of this convention, including the native (non-Docker) case, is
 packaged as an agent skill:
@@ -91,9 +98,17 @@ invocation.
 | `BATCH_SIZE` / `UBATCH_SIZE` | `4096` / `2048` | Prefill batch sizes. Lower them if a load fails on compute buffers. |
 | `SPEC_TYPE` | `draft-mtp` | Speculative decoding mode. `none` disables it — the first thing to try if the server exits at startup. |
 | `MLOCK` | `1` | Lock weights in RAM so they never reach swap. `0` opts out, allowing oversubscription. |
+| `FORK_REPO` / `FORK_BRANCH` / `FORK_COMMIT` | recipe-specific | *(native recipes that build their runtime)* The upstream to compile and the exact commit to pin. A branch head is not a pin; `build.sh` checks out the commit. |
+| `FORK_DIR` | `$SRC_ROOT/<tool>-<slug>` | *(native recipes that build their runtime)* The source checkout. Shared, never inside the recipe directory. |
+| `BUILD_DIR` / `BIN_DIR` | `$FORK_DIR/build-<backend>[/bin]` | *(native recipes that build their runtime)* Where the build lands and where the binaries are run from. Binaries run in place, with `LD_LIBRARY_PATH` pointed at `BIN_DIR`, so the shared libraries beside them are found without `patchelf` and nothing is copied out. |
+| `CUDA_PATH` | `/usr/local/cuda` | *(native CUDA builds)* Toolkit root. `build.sh` uses `$CUDA_PATH/bin/nvcc`. |
+| `CUDA_ARCHS` | `121a-real` | *(native CUDA builds)* `CMAKE_CUDA_ARCHITECTURES`. GB10 is compute capability 12.1 and the arch-specific `a` suffix is load-bearing: `sm_120a` is **not** forwards-compatible to `sm_121` and carries no PTX to JIT from, so a binary built for `120a` will not run on this box at all. `preflight.sh` reads the architectures back out of the built library rather than trusting the flag. |
+| `CTX_CHECKPOINTS` / `CACHE_RAM_MIB` | `8` / `8192` | *(llama.cpp recipes, hybrid/GDN models)* `-ctx-checkpoints` and `-cache-ram`. A hybrid model cannot partially evict its recurrent state, so an edited conversation re-prefills from a checkpoint or from zero; checkpoints bound that cost, and each one is roughly a slot's worth of recurrent state. Set explicitly because the default is per-slot and large enough to matter to a memory budget. |
+| `MMPROJ_CPU` | `0` | *(multimodal recipes)* `1` keeps the vision projector in system RAM (`--no-mmproj-offload`), trading a slower image prefill for the projector's memory. |
+| `IMAGE_MAX_TOKENS` | *(unset)* | *(multimodal recipes)* Cap on vision tokens per image, which are prefill. Unset leaves the backend's own default; `0` disables capping. |
 | `RESTART_POLICY` | `unless-stopped` | Docker restart policy; survives reboot. `no` for a one-off run. |
 | `TEMPERATURE` / `TOP_P` / `TOP_K` | `1.0` / `0.95` / `20` | Server-side sampling defaults, so clients that send nothing still get the model card's recommendation. |
-| `REASONING_EFFORT` | *(unset)* | *(vLLM recipes, thinking models)* Thinking depth pinned server-wide through the chat template. Unset leaves the template's own default, which is not necessarily the cheap one — Qwen3.8-Flash-Next defaults to `xhigh`. Clients override it per request with `chat_template_kwargs`. |
+| `REASONING_EFFORT` | *(unset)* | *(thinking models)* Thinking depth pinned server-wide through the chat template. Unset leaves the template's own default, which is not necessarily the cheap one — Qwen3.8-Flash-Next defaults to `xhigh`. Clients override it per request with `chat_template_kwargs`. |
 | `MAMBA_SSM_CACHE_DTYPE` | per profile | *(vLLM recipes, hybrid/GDN models)* dtype of the recurrent (SSM) state. **Empty is a meaningful value** — it selects the checkpoint's own dtype — so recipes read it with `${VAR-default}`, not `${VAR:-default}`, and tell "unset" from "set to empty". |
 | `CUDAGRAPH_CAPTURE_SIZES` | `auto` | *(vLLM recipes)* Which decode batch widths get a CUDA graph. `auto` enumerates every width the scheduler can actually build, so none falls back to eager; empty keeps vLLM's own list. Also read with `${VAR-default}`. |
 | `COMPILATION_MODE` | `0` | *(vLLM recipes)* `torch.compile` level passed through `--compilation-config`. `0` is no compilation; `3` is Inductor fusion. |
@@ -105,7 +120,8 @@ invocation.
 
 | Variable | Default | Means |
 |---|---|---|
-| `MIN_LLAMA_BUILD` | recipe-specific | Minimum llama.cpp build number. `preflight.sh` reads the real number out of the image and refuses to run below it, rather than trusting a mutable tag. |
+| `MIN_LLAMA_BUILD` | recipe-specific | Minimum llama.cpp build number. `preflight.sh` reads the real number out of the image — or, for a native recipe, out of the built binary — and refuses to run below it, rather than trusting a mutable tag. |
+| `COMPUTE_RESERVE_BYTES` | recipe-specific | *(native recipes)* Compute and graph buffers plus slack for the OS and driver: the one term in a memory budget that is a guess rather than arithmetic. Generous on purpose, and corrected against a measured start. |
 | `MEM_HEADROOM_BYTES` | `6 GiB` | Free memory demanded *on top of* the weights, for KV, compute buffers and the OS. A floor, not a budget. |
 | `DISK_RESERVE_BYTES` | `10 GiB` | Free disk demanded beyond the remaining download. |
 | `FORCE_VERIFY` | `0` | `1` re-runs the full SHA-256 pass. Normally verification is stamped by `(path, size, mtime)` so a restart does not re-hash tens of gigabytes. |
@@ -119,10 +135,11 @@ Each recipe is self-contained and driven by a single sourced config:
 
 ```
 profiles.sh     the only place paths, the profile table and helpers are defined
+build.sh        (only if the runtime has to be compiled) pinned checkout + build
 download.sh     checksum-verified, resumable weight download
 preflight.sh    assert everything start.sh depends on, before a long load
 start.sh        launch the server
-stop.sh         remove the container
+stop.sh         stop it -- remove the container, or signal the pidfile
 status.sh       is it up, what is it serving, is the host healthy
 bench.sh        measurements
 manifests/      pinned revision, per-shard sizes and SHA-256
@@ -132,13 +149,20 @@ scripts/        stdlib-only Python helpers
 Every script resolves its own directory, so a recipe runs from any working
 directory and can be cloned anywhere.
 
+A `build.sh` stays out of the repo-root launcher: a launcher that silently
+starts a twenty-minute compile is worse than one that tells you to run the
+build yourself.
+
 ## Reproducibility
 
 - **Pin the model revision.** Manifests record the Hub revision, every shard's
   byte size and its SHA-256.
 - **Pin the runtime.** Container tags are mutable. Where a recipe needs a
   minimum build, `preflight.sh` reads the build number out of the image and
-  refuses to proceed below it rather than trusting the tag.
+  refuses to proceed below it rather than trusting the tag. A recipe that
+  builds its runtime pins a commit, not a branch, and verifies the built
+  artifact — that it contains the kernels the model needs, and that it was
+  compiled for this GPU — because both failures are otherwise silent.
 - **Measurements name the machine they came from.** Numbers in a recipe README
   were measured on the host described there, not predicted.
 

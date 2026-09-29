@@ -1,0 +1,4 @@
+.llama.log
+.llama.pid
+.profile.active
+__pycache__/

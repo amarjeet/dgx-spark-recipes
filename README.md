@@ -15,6 +15,7 @@ were measured on the machine described there.
 | [`Ling-3.0-flash-Fin-GGUF-llamacpp`](recipes/Ling-3.0-flash-Fin-GGUF-llamacpp/) | [inclusionAI/Ling-3.0-flash-Fin](https://huggingface.co/inclusionAI/Ling-3.0-flash-Fin) — `bailingmoe3`, 124B total / 5.1B active | llama.cpp `server-cuda` | GGUF, 57–72 GiB | Hybrid KDA + MLA attention; full 262,144 context at ~46 tok/s; MTP self-speculation, no draft model |
 | [`Qwen3.8-Flash-Next-NVFP4-vLLM`](recipes/Qwen3.8-Flash-Next-NVFP4-vLLM/) | [Mia-AiLab/Qwen3.8-Flash-Next-NVFP4](https://huggingface.co/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4) — multimodal, MXFP8 attention + NVFP4 PLE | vLLM `TP=1` | NVFP4, 98.66 GiB | PLE table memory-mapped off the GPU; 262K native / 524K via YaRN; ~1.11M FP8 KV tokens. **AGPL**, see its README |
 | [`DeepSeek-V4.1-Flash-EXL3-ExLlamaV3`](recipes/DeepSeek-V4.1-Flash-EXL3-ExLlamaV3/) | [vcruz305/DSV4.1-Flash-SAGE-EXL3-1.59bpw](https://huggingface.co/vcruz305/DSV4.1-Flash-SAGE-EXL3-1.59bpw) — 552B backbone + ~196B Engram, 384 routed experts | **native ExLlamaV3** + TabbyAPI, `TP=1` | EXL3 1.59 bpw, 307.72 GiB on disk / 111.16 GiB resident | **No Docker.** GPU must be in ATS addressing mode; weights aliased from `mmap` rather than copied; 189 GiB of Engram read from disk. Needs a 64-byte re-lay before it will fit. **Serving path unqualified** and **AGPL-3.0-only** — see its README |
+| [`Ternary-Bonsai-2-27B-GGUF-llamacpp-prism`](recipes/Ternary-Bonsai-2-27B-GGUF-llamacpp-prism/) | [prism-ml/Ternary-Bonsai-2-27B-gguf](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf) — `qwen35`, 27.36B, ternary g128 at a true 1.72 bpw | **native PrismML llama.cpp fork**, built for `sm_121` | PQ2_0, 7.21 GB on disk / 6.70 GiB resident | **No Docker, and stock llama.cpp produces fluent nonsense on these files.** Hybrid attention (48 of 64 blocks linear) costs only 64 KiB/token of KV, so four concurrent 262,144-token slots fit in 77.9 GiB. 1040 t/s prefill, 29.8 t/s decode. Vision via mmproj; XML tool calls. Needle recalled at 254,032 tokens, though an open upstream bug (#27756) says it should not have been. The PTQ1_0 pack decodes 16% faster here, contradicting the model card — see its README |
 
 ## Quick start
 
@@ -47,8 +48,8 @@ cd dgx-spark-recipes/recipes/Qwen3.8-Flash-Next-NVFP4-vLLM
 ./scripts/smoke.py
 ```
 
-The third is the odd one out — native, not Docker, and with a build and a
-re-lay step before it will serve:
+The other two are native, not Docker, and each has a step before it will
+serve. DeepSeek needs a re-lay:
 
 ```bash
 cd dgx-spark-recipes/recipes/DeepSeek-V4.1-Flash-EXL3-ExLlamaV3
@@ -59,15 +60,27 @@ cd dgx-spark-recipes/recipes/DeepSeek-V4.1-Flash-EXL3-ExLlamaV3
 ./start.sh              # serves on :8009 via TabbyAPI
 ```
 
-**One GPU, one pool.** These recipes cannot run at the same time — each wants
-60–111 GiB of a 121.7 GiB unified pool. Preflight refuses to start a second and
-names what is holding the memory.
+Ternary Bonsai needs a build, because its runtime has no aarch64 binary to pull:
 
-Note that the DeepSeek recipe is **native**, so unlike the Docker recipes
-nothing caps it from outside: there is no cgroup limit and no watchdog between a
-bad budget and a hung kernel. Its `profiles.sh` derives the budget per profile
-and `preflight.sh` refuses a profile that cannot fit, but that check is the only
-guard.
+```bash
+cd dgx-spark-recipes/recipes/Ternary-Bonsai-2-27B-GGUF-llamacpp-prism
+
+./build.sh              # pinned llama.cpp fork, compiled for sm_121 (~20 min, once)
+./download.sh pq2       # 7.8 GB, pinned revision, checksum-verified
+./preflight.sh wide     # fork binary, sm_121, Hadamard metadata, budget, port
+./start.sh wide         # serves on :8010
+./scripts/smoke.py      # includes a needle test at depth -- read that recipe's README
+```
+
+**One GPU, one pool.** These recipes cannot run at the same time — each default
+profile wants 60–111 GiB of a 121.7 GiB unified pool. Preflight refuses to start
+a second and names what is holding the memory.
+
+Note that the DeepSeek and Ternary Bonsai recipes are **native**, so unlike the
+Docker recipes nothing caps them from outside: there is no cgroup limit and no
+watchdog between a bad budget and a hung kernel. Each one's `profiles.sh`
+derives the budget per profile and `preflight.sh` refuses a profile that cannot
+fit, but that check is the only guard.
 
 ## Requirements
 

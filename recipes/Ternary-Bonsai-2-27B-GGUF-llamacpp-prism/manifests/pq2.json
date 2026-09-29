@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+  "revision": "6ed5e12bf84b7a63069882c91dd9e9218647d17b",
+  "quantization": "PQ2_0",
+  "total_bytes": 7835415904,
+  "reserve_bytes": 10737418240,
+  "files": [
+    {
+      "path": "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+      "bytes": 7206168928,
+      "sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1"
+    },
+    {
+      "path": "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
+      "bytes": 629246976,
+      "sha256": "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903"
+    }
+  ]
+}
