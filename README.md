@@ -14,6 +14,7 @@ were measured on the machine described there.
 |---|---|---|---|---|
 | [`Ling-3.0-flash-Fin-GGUF-llamacpp`](recipes/Ling-3.0-flash-Fin-GGUF-llamacpp/) | [inclusionAI/Ling-3.0-flash-Fin](https://huggingface.co/inclusionAI/Ling-3.0-flash-Fin) — `bailingmoe3`, 124B total / 5.1B active | llama.cpp `server-cuda` | GGUF, 57–72 GiB | Hybrid KDA + MLA attention; full 262,144 context at ~46 tok/s; MTP self-speculation, no draft model |
 | [`Qwen3.8-Flash-Next-NVFP4-vLLM`](recipes/Qwen3.8-Flash-Next-NVFP4-vLLM/) | [Mia-AiLab/Qwen3.8-Flash-Next-NVFP4](https://huggingface.co/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4) — multimodal, MXFP8 attention + NVFP4 PLE | vLLM `TP=1` | NVFP4, 98.66 GiB | PLE table memory-mapped off the GPU; 262K native / 524K via YaRN; ~1.11M FP8 KV tokens. **AGPL**, see its README |
+| [`DeepSeek-V4.1-Flash-EXL3-ExLlamaV3`](recipes/DeepSeek-V4.1-Flash-EXL3-ExLlamaV3/) | [vcruz305/DSV4.1-Flash-SAGE-EXL3-1.59bpw](https://huggingface.co/vcruz305/DSV4.1-Flash-SAGE-EXL3-1.59bpw) — 552B backbone + ~196B Engram, 384 routed experts | **native ExLlamaV3** + TabbyAPI, `TP=1` | EXL3 1.59 bpw, 307.72 GiB on disk / 111.16 GiB resident | **No Docker.** GPU must be in ATS addressing mode; weights aliased from `mmap` rather than copied; 189 GiB of Engram read from disk. Needs a 64-byte re-lay before it will fit. **Serving path unqualified** and **AGPL-3.0-only** — see its README |
 | [`Ternary-Bonsai-2-27B-GGUF-llamacpp-prism`](recipes/Ternary-Bonsai-2-27B-GGUF-llamacpp-prism/) | [prism-ml/Ternary-Bonsai-2-27B-gguf](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf) — `qwen35`, 27.36B, ternary g128 at a true 1.72 bpw | **native PrismML llama.cpp fork**, built for `sm_121` | PQ2_0, 7.21 GB on disk / 6.70 GiB resident | **No Docker, and stock llama.cpp produces fluent nonsense on these files.** Hybrid attention (48 of 64 blocks linear) costs only 64 KiB/token of KV, so four concurrent 262,144-token slots fit in 77.9 GiB. 1040 t/s prefill, 29.8 t/s decode. Vision via mmproj; XML tool calls. Needle recalled at 254,032 tokens, though an open upstream bug (#27756) says it should not have been. The PTQ1_0 pack decodes 16% faster here, contradicting the model card — see its README |
 
 ## Quick start
@@ -47,8 +48,19 @@ cd dgx-spark-recipes/recipes/Qwen3.8-Flash-Next-NVFP4-vLLM
 ./scripts/smoke.py
 ```
 
-The third is the odd one out — native, not Docker, with a build step before it
-will serve, because its runtime has no aarch64 binary to pull:
+The other two are native, not Docker, and each has a step before it will
+serve. DeepSeek needs a re-lay:
+
+```bash
+cd dgx-spark-recipes/recipes/DeepSeek-V4.1-Flash-EXL3-ExLlamaV3
+
+./download.sh           # 307.72 GiB, pinned revision, checksum-verified
+./relay.sh              # 64-byte re-lay, ~118 GiB rewritten
+./preflight.sh          # ATS mode, toolchain, symlink chain, memory budget, port
+./start.sh              # serves on :8009 via TabbyAPI
+```
+
+Ternary Bonsai needs a build, because its runtime has no aarch64 binary to pull:
 
 ```bash
 cd dgx-spark-recipes/recipes/Ternary-Bonsai-2-27B-GGUF-llamacpp-prism
@@ -60,9 +72,15 @@ cd dgx-spark-recipes/recipes/Ternary-Bonsai-2-27B-GGUF-llamacpp-prism
 ./scripts/smoke.py      # includes a needle test at depth -- read that recipe's README
 ```
 
-**One GPU, one pool.** These two recipes cannot run at the same time — each
-wants 60–90 GiB of a 121.7 GiB unified pool. Preflight refuses to start the
-second and names the container holding the memory.
+**One GPU, one pool.** These recipes cannot run at the same time — each default
+profile wants 60–111 GiB of a 121.7 GiB unified pool. Preflight refuses to start
+a second and names what is holding the memory.
+
+Note that the DeepSeek and Ternary Bonsai recipes are **native**, so unlike the
+Docker recipes nothing caps them from outside: there is no cgroup limit and no
+watchdog between a bad budget and a hung kernel. Each one's `profiles.sh`
+derives the budget per profile and `preflight.sh` refuses a profile that cannot
+fit, but that check is the only guard.
 
 ## Requirements
 
@@ -125,17 +143,30 @@ server on loopback.
 
 [MIT](LICENSE) for this repository, **except** where a recipe says otherwise.
 
-One recipe is licensed differently and cannot be otherwise:
+Two recipes are licensed differently and cannot be otherwise. Both are ports of
+AGPL work, so AGPL §5(c) requires the derived works to stay AGPL. Each ships its
+own `LICENSE` and documents the reasoning in its README.
 
 | Recipe | Licence | Copyright |
 |---|---|---|
 | [`Qwen3.8-Flash-Next-NVFP4-vLLM`](recipes/Qwen3.8-Flash-Next-NVFP4-vLLM/) | **AGPL-3.0-or-later** | © 2026 [MiaAI Lab](https://x.com/MiaAI_lab) (original), © 2026 amarjeet (port) |
+| [`DeepSeek-V4.1-Flash-EXL3-ExLlamaV3`](recipes/DeepSeek-V4.1-Flash-EXL3-ExLlamaV3/) | **AGPL-3.0-only** | © 2026 Victor Cruz (original), © 2026 amarjeet (port) |
 
-It is a port of [MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark)
-and carries upstream's code verbatim under `files/`, so AGPL §5(c) requires the
-derived work to stay AGPL. It ships its own `LICENSE` and documents the
-reasoning in [its README](recipes/Qwen3.8-Flash-Next-NVFP4-vLLM/README.md#license).
+**The two tags differ, and the difference is load-bearing.** MiaAI Lab chose
+`-or-later`; Victor Cruz chose `-only`. Marking the DeepSeek port `-or-later`
+would grant permission under a future licence version that upstream never gave,
+so each carries its own upstream's tag exactly. One consequence: code may move
+from the `-or-later` recipe into the `-only` one — "or later" permits use under
+v3 — but **not** the other way.
 
-MIT code may be incorporated into that recipe; its AGPL code may **not** be
-copied back into the MIT parts of this repository. Per AGPL §5, holding both in
-one repository is an aggregate and does not make the other recipes AGPL.
+- [`Qwen3.8-Flash-Next-NVFP4-vLLM`](recipes/Qwen3.8-Flash-Next-NVFP4-vLLM/) is a
+  port of [MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark)
+  and carries upstream's code verbatim under `files/`.
+- [`DeepSeek-V4.1-Flash-EXL3-ExLlamaV3`](recipes/DeepSeek-V4.1-Flash-EXL3-ExLlamaV3/) is a
+  port of [vcruz305/DeepSeek-V4.1-Flash-EXL3-DGX-Spark-recipe](https://github.com/vcruz305/DeepSeek-V4.1-Flash-EXL3-DGX-Spark-recipe)
+  (`one-spark-tp1`). It also serves through TabbyAPI, which is independently
+  AGPL-3.0 and installed by you rather than vendored here.
+
+MIT code may be incorporated into those recipes; their AGPL code may **not** be
+copied back into the MIT parts of this repository. Per AGPL §5, holding all of
+them in one repository is an aggregate and does not make the other recipes AGPL.
