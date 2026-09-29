@@ -81,6 +81,8 @@ it, not just this one.
 | `VENV` | `~/venvs/<name>` | *(native recipes)* The virtualenv holding a source build. Several GB of torch, so it is shared rather than rebuilt per recipe, and it never lives in the recipe directory. |
 | `MODEL_ROOT` | recipe-specific, under `${DGX_SPARK_ROOT}/base-models/` | *(native recipes)* A derived, non-HF weight artifact — for example a re-laid pack. It does not go in the hub cache, which `huggingface_hub` owns and may prune. |
 | `TORCH_EXTENSIONS_DIR` | `~/.cache/torch_extensions` | PyTorch's JIT extension cache. Read only on the `cpp_extension.load()` path, so it is **inert** for an ahead-of-time `setup.py` build — set to the shared default anyway, because a recipe-private cache default is the pattern these rules exist to prevent. |
+| `TORCH_EXTENSIONS_HOST` | `~/.cache/torch_extensions` | *(Docker recipes that JIT-build extensions)* Host side of torch's extension cache, mounted onto `/root/.cache/torch_extensions`. Torch keys it by Python and CUDA version (`py312_cu130/`) **only when `TORCH_EXTENSIONS_DIR` is unset**; set, even to the default path, it builds straight into that directory, and a second torch version sharing the cache can load the first one's `.so`. So when an image sets `TORCH_EXTENSIONS_DIR` or `TRITON_CACHE_DIR`, as TensorFold's does, `start.sh` *unsets* them (`env -u`) rather than overriding them. |
+| `TENSORFOLD_CACHE_HOST` | `~/.cache/tensorfold` | *(TensorFold recipes)* TensorFold's own cache, mounted at its in-container default. |
 
 **Runtime and serving.** These change how the server runs. Safe to set per
 invocation.
@@ -184,4 +186,6 @@ the pool hangs the kernel: no OOM, no logs. A recipe whose runtime budgets
 itself that way must therefore cap its budget *from the host side* and leave an
 explicit reserve, rather than trusting a utilization fraction. See
 `Qwen3.8-Flash-Next-NVFP4-vLLM` for a worked example (`HOST_RESERVE_GIB`, a
-cgroup cap, and a memory watchdog).
+cgroup cap, and a memory watchdog). `Qwen3.8-Flash-Next-MLX4-TensorFold` is the other case:
+TensorFold's budget is `MemAvailable` minus a fixed tenth of RAM with no knob,
+so that recipe adds the cgroup cap and the watchdog around it instead.
