@@ -11,7 +11,7 @@
 # It sets no storage paths. The recipe's own defaults already point at each
 # tool's standard location -- see CONVENTIONS.md.
 #
-# Usage: run-qwen3.8-flash-next-tensorfold.sh [int8x4|int8x5|int4x6|bf16x3]
+# Usage: run-qwen3.8-flash-next-tensorfold.sh [int8x4|int8x5|int4x6|bf16x3|int8x1]
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
