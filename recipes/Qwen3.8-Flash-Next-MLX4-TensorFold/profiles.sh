@@ -63,20 +63,20 @@ SERVED_ALIAS="${SERVED_ALIAS:-Qwen3.8-Flash-Next}"
 
 # --- runtime -----------------------------------------------------------------
 
-# The patches and the serve flags are for TensorFold v0.3.6.2 exactly.
-TF_VERSION="${TF_VERSION:-v0.3.6.2}"
+# The patch and the serve flags are for TensorFold v0.6.1 exactly.
+TF_VERSION="${TF_VERSION:-v0.6.1}"
 TF_REPO="${TF_REPO:-https://github.com/ashhart/TensorFold.git}"
 # The release tag's commit, so a moved tag is caught rather than followed.
-TF_COMMIT="${TF_COMMIT:-71377a5373ed7b394f1b480ba2a6a3986b03af1c}"
+TF_COMMIT="${TF_COMMIT:-17c73e189f5e6a5304cda7ea37f086f9c49b4788}"
 BASE_IMAGE="${BASE_IMAGE:-nvcr.io/nvidia/pytorch:26.07-py3}"
 # sha256 of patches/*.patch in name order, first 12 hex digits: the tag suffix
 # and the image's tf.patches label. preflight.sh recomputes it.
-PATCHES_HASH_PINNED="82e893ed2bcc"
-# Upstream's prebuilt image for exactly these patches, pinned by digest: a tag
+PATCHES_HASH_PINNED="797af1d9df4d"
+# Upstream's prebuilt image for exactly this patch, pinned by digest: a tag
 # can be re-pushed, a digest cannot. build.sh pulls it and tags it as IMAGE,
 # or with PULL=0 builds the same thing locally from BASE_IMAGE.
 GHCR_IMAGE="${GHCR_IMAGE:-ghcr.io/miaai-lab/qwen3.8-flash-next-single-dgx-spark-tensorfold}"
-PREBUILT_DIGEST="${PREBUILT_DIGEST:-sha256:d7d76f866137463937929d46b34426712095163e7404a81bc2c8a544f9d142a6}"
+PREBUILT_DIGEST="${PREBUILT_DIGEST:-sha256:667693ccd7eea95d365ee5a17eed97067e13deb131a6e61fbbbbe6f69d0ebc69}"
 # The tag follows patches/, so an edited patch set is a different image.
 PATCHES_HASH="$(cat "${EXPERIMENT_DIR}"/patches/*.patch | sha256sum | cut -c1-12)"
 IMAGE="${IMAGE:-tensorfold-qwen38:${TF_VERSION}-${PATCHES_HASH}}"
@@ -89,13 +89,23 @@ RESTART_POLICY="${RESTART_POLICY:-no}"
 
 # --- memory ------------------------------------------------------------------
 #
-# TensorFold sizes itself: its budget is MemAvailable minus max(4 GiB, a tenth
-# of MemTotal), read at start (tensorfold/cuda/capacity.py), and it refuses a
-# setting that does not fit before any weights load. There is no knob for
-# that reserve. On this host a tenth is 12.17 GiB, so an idle Spark gives a
-# ~103-104 GiB budget and the default profile's 102.6 GiB estimate leaves the
-# host roughly its reserve and no more. Upstream measured the host keeping at
-# least 9.7 GiB free through a 195k-token prompt and 5 concurrent requests.
+# TensorFold sizes itself, from MemAvailable read once at start minus a
+# reserve (tensorfold/cuda/capacity.py): TENSORFOLD_MEMORY_RESERVE_GIB, or
+# max(4 GiB, a tenth of MemTotal) when unset -- 12.17 GiB on this host. It
+# refuses a setting whose full windows do not fit before any weights load.
+#
+# Since v0.6 the KV caches are not allocated whole at load. Each stream's
+# slot starts small and grows with its context, and before each growth a
+# gate asks the live MemAvailable for the growth plus max(2 GiB, the vision
+# workspace) on top of the same reserve. So the reserve is also the floor
+# the server grows down to under traffic. A lone stream grows past the gate
+# to finish its reply (multi.py: _grow(alone=True)); int8x1 always does.
+#
+# Upstream sets the reserve to 2 GiB, the knob's floor, to admit five full
+# windows, and measured MemAvailable down to 2.9 GiB through five ~236k
+# prompts. That is under this recipe's watchdog floors, so the watchdog would
+# stop the server first. Left unset here (TensorFold's own 12.17 GiB) except
+# where a profile needs less; see select_profile and README "Memory".
 #
 # Two host-side guards back that up, because on unified memory an exhausted
 # pool hangs the kernel -- no OOM, no logs:
@@ -104,6 +114,8 @@ RESTART_POLICY="${RESTART_POLICY:-no}"
 #     cache the container faults in), not the weights;
 #   * scripts/memwatch.sh, which stops the container when MemAvailable or
 #     MemFree stays under a floor.
+
+_ENV_MEMORY_RESERVE_GIB="${TENSORFOLD_MEMORY_RESERVE_GIB:-}"
 
 # Host-side cgroup cap, GiB. Measured: see README "Memory".
 CONTAINER_MEM_GIB="${CONTAINER_MEM_GIB:-24}"
@@ -135,12 +147,35 @@ THINKING="${THINKING:-1}"
 # TensorFold's server default is medium, which adds no system-prompt text.
 # Clients override it with chat_template_kwargs.reasoning_effort.
 REASONING_EFFORT="${REASONING_EFFORT:-medium}"
-# 4,096-row prompt chunks (patch 0007): prefill +2-5% from 3k tokens, +0.94 GiB.
-TENSORFOLD_PREFILL_ROWS="${TENSORFOLD_PREFILL_ROWS:-4096}"
-# Prompt-lookup drafts ahead of MTP (patch 0008; needs >= 2 streams).
+# Reply length for a request that sets no max_tokens. TensorFold's own 4,096
+# can end a thinking reply before it answers (finish_reason "length", no
+# content). Clamped to the room left in the stream's window and reserves no
+# memory; a request's own max_tokens wins.
+MAX_TOKENS="${MAX_TOKENS:-32768}"
+# Image and video input: the checkpoint's own vision tower (0.84 GiB). Its
+# ~0.8 GiB of scratch is borrowed while an image encodes, not reserved at
+# start (TENSORFOLD_VISION_WORKSPACE_MIB=0). VISION=0: text only.
+# The profile decides when unset: on, except int8x1 (TensorFold's Flash Next
+# image input needs --parallel 2 or more).
+_ENV_VISION="${VISION:-}"
+VISION="${VISION:-1}"
+VISION_URLS="${VISION_URLS:-0}"            # 1: also fetch https:// image/video URLs (default: data URLs only)
+VISION_MAX_IMAGES="${VISION_MAX_IMAGES-50}"   # per request, a chat's turns all count; empty: TensorFold's 4
+TENSORFOLD_VISION_WORKSPACE_MIB="${TENSORFOLD_VISION_WORKSPACE_MIB:-0}"
+TENSORFOLD_IMAGE_TOKENS="${TENSORFOLD_IMAGE_TOKENS:-16384}"   # shared by a request's images, each at most 4,096
+TENSORFOLD_VIDEO_TOKENS="${TENSORFOLD_VIDEO_TOKENS:-16384}"   # a whole video's budget
+# Prompt piece rows. Unset, v0.6.1 picks 2,048 with vision and 4,096 without.
+# With the n-gram tables on SSD upstream measured 4,096 10-30% slower from 5k
+# to 16k tokens, so 2,048 is pinned there. Empty: TensorFold's choice.
+if [[ "${PLE_ON_SSD}" == 1 ]]; then TENSORFOLD_PREFILL_ROWS="${TENSORFOLD_PREFILL_ROWS-2048}"
+else TENSORFOLD_PREFILL_ROWS="${TENSORFOLD_PREFILL_ROWS:-}"; fi
+# Prompt-lookup drafts ahead of MTP (patch 0002; needs >= 2 streams).
 TENSORFOLD_MTP_COPY="${TENSORFOLD_MTP_COPY:-1}"
 TENSORFOLD_NO_UPDATE_CHECK="${TENSORFOLD_NO_UPDATE_CHECK:-1}"
-export TENSORFOLD_PREFILL_ROWS TENSORFOLD_MTP_COPY TENSORFOLD_NO_UPDATE_CHECK
+# The TENSORFOLD_* switches this file sets; start.sh passes each one that is
+# non-empty, plus the profile's TENSORFOLD_MEMORY_RESERVE_GIB.
+RECIPE_TF_VARS=(TENSORFOLD_PREFILL_ROWS TENSORFOLD_MTP_COPY TENSORFOLD_NO_UPDATE_CHECK
+                TENSORFOLD_VISION_WORKSPACE_MIB TENSORFOLD_IMAGE_TOKENS TENSORFOLD_VIDEO_TOKENS)
 
 EXTRA_SERVE_ARGS="${EXTRA_SERVE_ARGS:-}"
 
@@ -148,23 +183,24 @@ EXTRA_SERVE_ARGS="${EXTRA_SERVE_ARGS:-}"
 #
 # One checkpoint; the profiles are KV-pool trade-offs. TensorFold gives every
 # stream a full window, so the pool is streams x window. EST_GIB is
-# TensorFold's own startup estimate for the profile as upstream reported it;
+# TensorFold's own startup estimate, measured here on v0.6.1 (2026-10-02);
 # the server prints the real one at every start ("startup estimate ...").
+# Empty: not run here, and TensorFold's admission alone decides.
 #
-#   int8x4   4 x 262,144, int8 KV   1,048,576 tokens    97.8 GiB   default here
-#   int8x5   5 x 262,144, int8 KV   1,310,720 tokens   102.6 GiB   upstream's default
-#   int4x6   6 x 262,144, int4 KV   1,572,864 tokens    97.7 GiB   int4 changes output; quality unmeasured
-#   bf16x3   3 x 262,144, bf16 KV     786,432 tokens   102.1 GiB   full-precision KV
+#   int8x5   5 x 262,144, int8 KV   1,310,720 tokens   85.39 GiB   default (upstream's too)
+#   int8x4   4 x 262,144, int8 KV   1,048,576 tokens   85.18 GiB
+#   int4x6   6 x 262,144, int4 KV   1,572,864 tokens   not run   int4 changes output; quality unmeasured
+#   bf16x3   3 x 262,144, bf16 KV     786,432 tokens   not run   full-precision KV
+#   int8x1   1 x 262,144, int8 KV     262,144 tokens   87.57 GiB   co-tenant; text only
 #
 # int8 and int4 KV use one fp16 scale per 32 values and change the output
 # slightly against bf16; upstream measured int8 only.
 
-# int8x4, not upstream's int8x5. Measured on this host: int8x5 loads with
-# MemAvailable down to 7.7 GiB and MemFree under 2 GiB for three consecutive
-# watchdog samples of five -- within a gigabyte of where the NVIDIA driver
-# starts refusing allocations. int8x4 bottoms out at 17.9 GiB with no low
-# sample at all, for one fewer stream. int8x5 is one word away.
-DEFAULT_PROFILE="${DEFAULT_PROFILE:-int8x4}"
+# int8x5, upstream's. On v0.3.6.2 this recipe defaulted to int8x4, because
+# int8x5 allocated every window at load and took the host to 7.7 GiB. On
+# v0.6.1 the caches grow under the gate: five concurrent ~226k prompts all
+# completed here with MemAvailable no lower than 14.4 GiB.
+DEFAULT_PROFILE="${DEFAULT_PROFILE:-int8x5}"
 KNOWN_PROFILES=(int8x5 int8x4 int4x6 bf16x3 int8x1)
 
 _ENV_PARALLEL="${PARALLEL:-}"
@@ -173,14 +209,16 @@ _ENV_KV_DTYPE="${KV_DTYPE:-}"
 
 select_profile() {
   PROFILE="${1:-${DEFAULT_PROFILE}}"
+  RESERVE_GIB=""   # empty: TensorFold's own reserve
   case "${PROFILE}" in
-    int8x5) PARALLEL=5; KV_DTYPE=int8; EST_GIB=102.6 ;;
-    int8x4) PARALLEL=4; KV_DTYPE=int8; EST_GIB=97.8 ;;
-    int4x6) PARALLEL=6; KV_DTYPE=int4; EST_GIB=97.7 ;;
-    bf16x3) PARALLEL=3; KV_DTYPE=bf16; EST_GIB=102.1 ;;
+    int8x5) PARALLEL=5; KV_DTYPE=int8; EST_GIB=85.39 ;;
+    int8x4) PARALLEL=4; KV_DTYPE=int8; EST_GIB=85.18 ;;
+    int4x6) PARALLEL=6; KV_DTYPE=int4; EST_GIB="" ;;
+    bf16x3) PARALLEL=3; KV_DTYPE=bf16; EST_GIB="" ;;
     # One full-window stream, to share the pool with a second server (the
-    # Clef-Flash recipe). Measured: host MemAvailable 33.7 GiB once loaded.
-    int8x1) PARALLEL=1; KV_DTYPE=int8; EST_GIB=88.18 ;;
+    # Clef-Flash recipe). A lone stream's window is allocated whole: measured
+    # MemAvailable 33.0 GiB once loaded, unchanged after a 226k prompt.
+    int8x1) PARALLEL=1; KV_DTYPE=int8; EST_GIB=87.57 ;;
     *)
       printf 'error: unknown profile: %s (expected one of: %s)\n' \
         "${PROFILE}" "${KNOWN_PROFILES[*]}" >&2
@@ -190,6 +228,9 @@ select_profile() {
   CONTEXT="${_ENV_CONTEXT:-262144}"
   PARALLEL="${_ENV_PARALLEL:-${PARALLEL}}"
   KV_DTYPE="${_ENV_KV_DTYPE:-${KV_DTYPE}}"
+  VISION="${_ENV_VISION:-$(( PARALLEL >= 2 ))}"
+  # What start.sh passes as TENSORFOLD_MEMORY_RESERVE_GIB; the environment wins.
+  MEMORY_RESERVE_GIB="${_ENV_MEMORY_RESERVE_GIB:-${RESERVE_GIB}}"
   # An override makes the table's estimate meaningless; TensorFold's own
   # admission is then the only estimate, and preflight says so.
   if [[ -n "${_ENV_PARALLEL}${_ENV_CONTEXT}${_ENV_KV_DTYPE}" ]]; then
@@ -213,9 +254,14 @@ serve_args() {
     --parallel "${PARALLEL}" --context "${CONTEXT}" --kv-dtype "${KV_DTYPE}"
     --mtp-drafts "${MTP_DRAFTS}" --mtp-confidence "${MTP_CONFIDENCE}"
     --temperature "${TEMPERATURE}" --top-p "${TOP_P}" --top-k "${TOP_K}"
-    --reasoning-effort "${REASONING_EFFORT}"
+    --reasoning-effort "${REASONING_EFFORT}" --max-tokens "${MAX_TOKENS}"
   )
   [[ "${PLE_ON_SSD}" == 1 ]] && SERVE_ARGS+=(--ple-on-ssd)
+  if [[ "${VISION}" == 1 ]]; then
+    SERVE_ARGS+=(--vision)
+    [[ "${VISION_URLS}" == 1 ]] && SERVE_ARGS+=(--vision-urls)
+    [[ -n "${VISION_MAX_IMAGES}" ]] && SERVE_ARGS+=(--vision-max-images "${VISION_MAX_IMAGES}")
+  fi
   if [[ "${THINKING}" == 1 ]]; then SERVE_ARGS+=(--thinking); else SERVE_ARGS+=(--no-thinking); fi
   # shellcheck disable=SC2206
   [[ -n "${EXTRA_SERVE_ARGS}" ]] && SERVE_ARGS+=(${EXTRA_SERVE_ARGS})
@@ -233,8 +279,10 @@ host_swap_used_bytes() {
   awk '/^SwapTotal:/ {t=$2} /^SwapFree:/ {f=$2} END {print (t - f) * 1024}' /proc/meminfo
 }
 
-# TensorFold's host reserve: max(4 GiB, MemTotal / 10).
+# TensorFold's startup reserve: MEMORY_RESERVE_GIB when set (select_profile),
+# else max(4 GiB, MemTotal / 10).
 tf_reserve_bytes() {
+  if [[ -n "${MEMORY_RESERVE_GIB:-}" ]]; then gib_to_bytes "${MEMORY_RESERVE_GIB}"; return; fi
   local total; total="$(mem_total_bytes)"
   (( total / 10 > 4 * GIB )) && printf '%s' "$(( total / 10 ))" || printf '%s' "$(( 4 * GIB ))"
 }

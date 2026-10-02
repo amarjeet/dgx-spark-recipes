@@ -4,7 +4,7 @@
 # Copyright (c) 2026 amarjeet (port)
 # Derived from MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold (tools/scripts/toolcheck.py), MIT.
 # Modified: this recipe's port (8011) and model id (SERVED_MODEL_NAME), run from scripts/.
-"""A tool call with an array parameter must come back with that argument as a JSON array (patch 0001).
+"""A tool call with an array parameter must come back with that argument as a JSON array (typed by the schema).
 
 Usage: scripts/toolcheck.py      (API_URL / PORT as in bench.py). Exit code 1 on failure.
 """

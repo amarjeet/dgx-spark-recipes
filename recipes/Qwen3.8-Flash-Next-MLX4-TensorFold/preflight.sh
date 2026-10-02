@@ -4,7 +4,7 @@
 #
 # Assert everything start.sh depends on, before a ~2.5 minute load.
 #
-#   ./preflight.sh [profile]      profile: int8x4 (default) | int8x5 | int4x6 | bf16x3 | int8x1 (co-tenant)
+#   ./preflight.sh [profile]      profile: int8x5 (default) | int8x4 | int4x6 | bf16x3 | int8x1 (co-tenant)
 #
 # Exit 0 when every check passes, 1 otherwise. Warnings do not fail.
 
@@ -81,16 +81,28 @@ elif [[ -n "${EST_GIB}" ]]; then
   if (( budget >= need )); then
     ok "budget covers ${PROFILE}'s ${EST_GIB} GiB estimate ($(human_bytes "$(( budget - need ))") spare)"
   else
-    bad "budget $(human_bytes "${budget}") is under ${PROFILE}'s ${EST_GIB} GiB estimate: free memory, or try int8x4 / int4x6 (or stop the other GPU tenant)"
+    bad "budget $(human_bytes "${budget}") is under ${PROFILE}'s ${EST_GIB} GiB estimate: free memory, or try a smaller profile (or stop the other GPU tenant)"
   fi
 else
-  warn "PARALLEL/CONTEXT/KV_DTYPE overridden: no table estimate; TensorFold's admission decides (it refuses before loading)"
+  warn "no measured estimate for ${PROFILE} as set (not run here, or PARALLEL/CONTEXT/KV_DTYPE overridden); TensorFold's admission decides (it refuses before loading)"
+fi
+# Under traffic the caches grow until MemAvailable is about the reserve plus
+# 2 GiB (the gate's own margin). Below the watchdog floor, the watchdog stops
+# the server before TensorFold stops growing.
+floor="$(( reserve + 2 * GIB ))"
+if (( floor > $(gib_to_bytes "${MEMWATCH_MIN_GIB}") )); then
+  ok "caches stop growing near MemAvailable $(human_bytes "${floor}"), above the watchdog's ${MEMWATCH_MIN_GIB} GiB"
+else
+  warn "reserve $(human_bytes "${reserve}"): caches may grow to MemAvailable ~$(human_bytes "${floor}"), under the watchdog's ${MEMWATCH_MIN_GIB} GiB floor, which then stops the server"
 fi
 cg="$(gib_to_bytes "${CONTAINER_MEM_GIB}")"
 (( cg < total / 2 )) && ok "container host-side cap ${CONTAINER_MEM_GIB} GiB" \
   || warn "CONTAINER_MEM_GIB=${CONTAINER_MEM_GIB} is over half the pool; the cap no longer protects the host"
 
 printf '\nserve arguments\n'
+if [[ "${VISION}" == 1 ]] && (( PARALLEL < 2 )); then
+  bad "VISION=1 with PARALLEL=${PARALLEL}: TensorFold's Flash Next image input needs 2 or more streams (VISION=0, or PARALLEL=2)"
+fi
 if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
   # TensorFold's own parser in a throwaway container without the GPU, so a
   # typo in EXTRA_SERVE_ARGS fails here rather than after a stop.
