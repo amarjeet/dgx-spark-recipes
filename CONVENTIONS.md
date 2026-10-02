@@ -78,11 +78,12 @@ it, not just this one.
 | `OUT_DIR` | `${XDG_STATE_HOME:-~/.local/state}/dgx-spark-recipes/<recipe>` | Bench results and verification stamps. Never inside the recipe directory. |
 | `XDG_STATE_HOME` | `~/.local/state` | Standard base for `OUT_DIR`; honored rather than assumed. |
 | `SRC_ROOT` | `~/src` | *(native recipes)* Third-party source checkouts, pinned by commit and shared across recipes. This host's existing convention; the layout skill has no row for source trees, and that silence is a cue to follow the host rather than invent a path under the workspace root. |
-| `VENV` | `~/venvs/<name>` | *(native recipes)* The virtualenv holding a source build. Several GB of torch, so it is shared rather than rebuilt per recipe, and it never lives in the recipe directory. |
+| `VENV` | `~/venvs/<name>` | *(native recipes)* The virtualenv holding a source build or a recipe's Python dependencies. Several GB of torch, so it never lives in the recipe directory. A recipe with Python dependencies declares them as a **uv project** (`pyproject.toml` + `uv.lock`, in the recipe) and points uv at this path with `UV_PROJECT_ENVIRONMENT`, so `uv sync --locked` reproduces it exactly; uv's package cache stays at its default, `~/.cache/uv`. |
 | `MODEL_ROOT` | recipe-specific, under `${DGX_SPARK_ROOT}/base-models/` | *(native recipes)* A derived, non-HF weight artifact — for example a re-laid pack. It does not go in the hub cache, which `huggingface_hub` owns and may prune. |
 | `TORCH_EXTENSIONS_DIR` | `~/.cache/torch_extensions` | PyTorch's JIT extension cache. Read only on the `cpp_extension.load()` path, so it is **inert** for an ahead-of-time `setup.py` build — set to the shared default anyway, because a recipe-private cache default is the pattern these rules exist to prevent. |
 | `TORCH_EXTENSIONS_HOST` | `~/.cache/torch_extensions` | *(Docker recipes that JIT-build extensions)* Host side of torch's extension cache, mounted onto `/root/.cache/torch_extensions`. Torch keys it by Python and CUDA version (`py312_cu130/`) **only when `TORCH_EXTENSIONS_DIR` is unset**; set, even to the default path, it builds straight into that directory, and a second torch version sharing the cache can load the first one's `.so`. So when an image sets `TORCH_EXTENSIONS_DIR` or `TRITON_CACHE_DIR`, as TensorFold's does, `start.sh` *unsets* them (`env -u`) rather than overriding them. |
 | `TENSORFOLD_CACHE_HOST` | `~/.cache/tensorfold` | *(TensorFold recipes)* TensorFold's own cache, mounted at its in-container default. |
+| `UV_PROJECT_ENVIRONMENT` | `$VENV` | *(uv-project recipes)* The variable uv reads to put a project's venv somewhere other than `./.venv`. Set by the recipe's `setup.sh`, only for uv. |
 
 **Runtime and serving.** These change how the server runs. Safe to set per
 invocation.
@@ -108,6 +109,10 @@ invocation.
 | `CTX_CHECKPOINTS` / `CACHE_RAM_MIB` | `8` / `8192` | *(llama.cpp recipes, hybrid/GDN models)* `-ctx-checkpoints` and `-cache-ram`. A hybrid model cannot partially evict its recurrent state, so an edited conversation re-prefills from a checkpoint or from zero; checkpoints bound that cost, and each one is roughly a slot's worth of recurrent state. Set explicitly because the default is per-slot and large enough to matter to a memory budget. |
 | `MMPROJ_CPU` | `0` | *(multimodal recipes)* `1` keeps the vision projector in system RAM (`--no-mmproj-offload`), trading a slower image prefill for the projector's memory. |
 | `IMAGE_MAX_TOKENS` | *(unset)* | *(multimodal recipes)* Cap on vision tokens per image, which are prefill. Unset leaves the backend's own default; `0` disables capping. |
+| `WEIGHTS` | `fp8` | *(Clef-Flash)* `fp8` converts the decoder's linear layers to FP8 at load, admitted by a measured comparison against BF16 (`drift.sh`); `bf16` serves the checkpoint as released. |
+| `MAX_LENGTH` | `16384` | *(Clef-Flash)* Longest input in tokens. The server warms up at exactly this length, so the allocator's high-water mark is reached at start, under the watchdog, rather than by a later request. |
+| `HOST_FLOOR_GIB` / `LOAD_FLOOR_GIB` | `12` / `8` | *(co-tenant recipes)* `MemAvailable` that must remain after the steady state, and after the load peak. The steady floor sits above both watchdogs' `MemFree` gates, so the co-tenant's ordinary traffic cannot arm them. |
+| `CGROUP_MEM_GIB` | recipe-specific | *(native recipes with a cap)* `MemoryMax` of the systemd user scope the server runs in. CUDA allocations are not charged to it on GB10, so it bounds the host-side footprint only. |
 | `RESTART_POLICY` | `unless-stopped` | Docker restart policy; survives reboot. `no` for a one-off run. |
 | `TEMPERATURE` / `TOP_P` / `TOP_K` | `1.0` / `0.95` / `20` | Server-side sampling defaults, so clients that send nothing still get the model card's recommendation. |
 | `REASONING_EFFORT` | *(unset)* | *(thinking models)* Thinking depth pinned server-wide through the chat template. Unset leaves the template's own default, which is not necessarily the cheap one — Qwen3.8-Flash-Next defaults to `xhigh`. Clients override it per request with `chat_template_kwargs`. |
@@ -138,6 +143,8 @@ Each recipe is self-contained and driven by a single sourced config:
 ```
 profiles.sh     the only place paths, the profile table and helpers are defined
 build.sh        (only if the runtime has to be compiled) pinned checkout + build
+setup.sh        (only if the recipe has Python dependencies) uv sync --locked into $VENV
+pyproject.toml  ... and those dependencies, as a uv project, with its uv.lock
 download.sh     checksum-verified, resumable weight download
 preflight.sh    assert everything start.sh depends on, before a long load
 start.sh        launch the server
@@ -146,12 +153,13 @@ status.sh       is it up, what is it serving, is the host healthy
 bench.sh        measurements
 manifests/      pinned revision, per-shard sizes and SHA-256
 scripts/        stdlib-only Python helpers
+server/         (uv-project recipes) code that runs in the venv
 ```
 
 Every script resolves its own directory, so a recipe runs from any working
 directory and can be cloned anywhere.
 
-A `build.sh` stays out of the repo-root launcher: a launcher that silently
+A `build.sh` or `setup.sh` stays out of the repo-root launcher: a launcher that silently
 starts a twenty-minute compile is worse than one that tells you to run the
 build yourself.
 
@@ -189,3 +197,17 @@ explicit reserve, rather than trusting a utilization fraction. See
 cgroup cap, and a memory watchdog). `Qwen3.8-Flash-Next-MLX4-TensorFold` is the other case:
 TensorFold's budget is `MemAvailable` minus a fixed tenth of RAM with no knob,
 so that recipe adds the cgroup cap and the watchdog around it instead.
+
+### Co-tenancy
+
+Two servers on one pool means two watchdogs, and whichever fires first stops its
+server. So a recipe built to run *beside* another must make its own watchdog
+fire first: every one of its conditions contains the other's, and it reacts
+faster. It also has to SIGKILL rather than SIGTERM, because a server still
+inside its load ignores SIGTERM, and a grace period lets the load carry the pool
+past the neighbour's floor. That happened once here, and it stopped the
+neighbour. Its admission check covers the load peak as well as the steady
+state, and the steady floor sits above the watchdogs' `MemFree` gates, because
+below that line the neighbour's normal page-cache churn trips them.
+`Clef-Flash-FP8-transformers` beside `Qwen3.8-Flash-Next-MLX4-TensorFold`
+(`int8x1`) is the worked example.

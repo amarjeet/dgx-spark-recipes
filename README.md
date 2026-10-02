@@ -17,6 +17,7 @@ were measured on the machine described there.
 | [`Qwen3.8-Flash-Next-MLX4-TensorFold`](recipes/Qwen3.8-Flash-Next-MLX4-TensorFold/) | [Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP) — the same model, MLX 4-bit g32 + MTP head | TensorFold v0.3.6.2 + 8 speed-only patches | MLX 4-bit, 105.46 GiB on disk / ~75 GiB resident | 4 concurrent requests at the full 262,144 window by default (1.05M-token int8 KV pool; upstream's 5 is a profile); n-gram tables read from SSD. ~2,450 tok/s prefill, 59 tok/s single-stream decode, needle recalled at 194,893 tokens. Sizes itself from free memory, so it runs under a cgroup cap and a watchdog. **Same model as the vLLM recipe; run one or the other** |
 | [`DeepSeek-V4.1-Flash-EXL3-ExLlamaV3`](recipes/DeepSeek-V4.1-Flash-EXL3-ExLlamaV3/) | [vcruz305/DSV4.1-Flash-SAGE-EXL3-1.59bpw](https://huggingface.co/vcruz305/DSV4.1-Flash-SAGE-EXL3-1.59bpw) — 552B backbone + ~196B Engram, 384 routed experts | **native ExLlamaV3** + TabbyAPI, `TP=1` | EXL3 1.59 bpw, 307.72 GiB on disk / 111.16 GiB resident | **No Docker.** GPU must be in ATS addressing mode; weights aliased from `mmap` rather than copied; 189 GiB of Engram read from disk. Needs a 64-byte re-lay before it will fit. **Serving path unqualified** and **AGPL-3.0-only** — see its README |
 | [`Ternary-Bonsai-2-27B-GGUF-llamacpp-prism`](recipes/Ternary-Bonsai-2-27B-GGUF-llamacpp-prism/) | [prism-ml/Ternary-Bonsai-2-27B-gguf](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf) — `qwen35`, 27.36B, ternary g128 at a true 1.72 bpw | **native PrismML llama.cpp fork**, built for `sm_121` | PQ2_0, 7.21 GB on disk / 6.70 GiB resident | **No Docker, and stock llama.cpp produces fluent nonsense on these files.** Hybrid attention (48 of 64 blocks linear) costs only 64 KiB/token of KV, so four concurrent 262,144-token slots fit in 77.9 GiB. 1040 t/s prefill, 29.8 t/s decode. Vision via mmproj; XML tool calls. Needle recalled at 254,032 tokens, though an open upstream bug (#27756) says it should not have been. The PTQ1_0 pack decodes 16% faster here, contradicting the model card — see its README |
+| [`Clef-Flash-FP8-transformers`](recipes/Clef-Flash-FP8-transformers/) | [Cloudflare/clef-flash](https://huggingface.co/Cloudflare/clef-flash) — 9B multimodal decision model: Qwen3.5-9B + a joint schema head, probabilities per option, no text generation | **native transformers** in a uv venv, SystemOne API | BF16 checkpoint, served as FP8 decoder linears, 18.7 GiB resident | **Built to run beside the Qwen TensorFold recipe on `int8x1`, not instead of it.** FP8 converted at load (85/86 decisions match BF16); 100 ms at ~330 tokens, 9.3 req/s. Its watchdog is tuned to fire before TensorFold's, so a memory squeeze costs Clef, not Qwen. `vllm serve` would drop the decision head — see its README |
 
 ## Quick start
 
@@ -77,9 +78,27 @@ cd dgx-spark-recipes/recipes/Ternary-Bonsai-2-27B-GGUF-llamacpp-prism
 profile wants 60–111 GiB of a 121.7 GiB unified pool. Preflight refuses to start
 a second and names what is holding the memory.
 
+The one exception is designed in: Clef-Flash next to Qwen3.8-Flash-Next on
+TensorFold's one-stream profile. Start Qwen first:
+
+```bash
+cd dgx-spark-recipes/recipes/Qwen3.8-Flash-Next-MLX4-TensorFold
+./start.sh restart int8x1    # 1 x 262,144 tokens; leaves ~33.7 GiB
+
+cd ../Clef-Flash-FP8-transformers
+./setup.sh                   # uv project -> ~/venvs/clef-flash (once)
+./download.sh                # 17.77 GiB, pinned revision, checksum-verified
+./start.sh                   # serves on :8012; preflight checks load peak and steady state
+./scripts/smoke.py
+```
+
+Memory is partitioned between them; compute is not, so each runs at roughly
+half speed while the other is busy. Clef's README has the measurements.
+
 Note that the DeepSeek and Ternary Bonsai recipes are **native**, so unlike the
 Docker recipes nothing caps them from outside: there is no cgroup limit and no
-watchdog between a bad budget and a hung kernel. Each one's `profiles.sh`
+watchdog between a bad budget and a hung kernel. (Clef-Flash is native too, but
+adds both: a systemd user scope with a memory cap, and its own watchdog.) Each one's `profiles.sh`
 derives the budget per profile and `preflight.sh` refuses a profile that cannot
 fit, but that check is the only guard.
 
@@ -89,6 +108,9 @@ fit, but that check is the only guard.
   to run elsewhere — the measurements and memory budgets assume this machine.
 - Docker with the NVIDIA container runtime (`--gpus all`).
 - `curl`, `python3` (stdlib only — no pip installs), `nvidia-smi`.
+- [`uv`](https://docs.astral.sh/uv/), for the one recipe with Python
+  dependencies (Clef-Flash). It installs into its own venv under `~/venvs/`,
+  never into the system Python.
 - A Hugging Face token for gated repos. Export `HF_TOKEN`, or log in with
   `hf auth login`; recipes read the standard token file. The Hub works
   anonymously at a lower rate limit.

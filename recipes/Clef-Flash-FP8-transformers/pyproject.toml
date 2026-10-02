@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: MIT
+#
+# The serving environment for Clef-Flash, as a uv project. Only this file and
+# uv.lock live in the recipe: the virtualenv itself is several GB of torch, so
+# it goes to ~/venvs/clef-flash (CONVENTIONS.md, VENV), never into the recipe
+# directory. setup.sh points UV_PROJECT_ENVIRONMENT there; uv's own package
+# cache stays at its default, ~/.cache/uv, shared with every other uv project.
+#
+# Versions are the model card's tested pair (torch 2.11, transformers 5.10.2).
+# torch comes from the PyTorch cu130 index: its aarch64 wheels carry sm_120
+# SASS, which runs on GB10's sm_121 (same major, no "a" suffix), whereas the
+# PyPI aarch64 wheel is CPU-only.
+
+[project]
+name = "clef-flash-server"
+version = "0.1.0"
+description = "Clef-Flash (Cloudflare) served behind a SystemOne-compatible HTTP API on a DGX Spark"
+requires-python = "==3.12.*"
+dependencies = [
+  "torch==2.11.0",
+  "torchvision==0.26.0",
+  "transformers==5.10.2",
+  "safetensors>=0.6",
+  "huggingface-hub>=1.0",
+  "pillow>=11",
+  "numpy>=2",
+  "fastapi>=0.115",
+  "uvicorn>=0.34",
+  "flash-linear-attention==0.5.2",  # Triton GDN kernels; without it transformers falls back to a slow torch loop
+  "accelerate==1.15.0",  # load_release_model passes device_map, which transformers routes through accelerate
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
