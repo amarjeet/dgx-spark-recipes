@@ -165,7 +165,7 @@ EXTRA_SERVE_ARGS="${EXTRA_SERVE_ARGS:-}"
 # starts refusing allocations. int8x4 bottoms out at 17.9 GiB with no low
 # sample at all, for one fewer stream. int8x5 is one word away.
 DEFAULT_PROFILE="${DEFAULT_PROFILE:-int8x4}"
-KNOWN_PROFILES=(int8x5 int8x4 int4x6 bf16x3)
+KNOWN_PROFILES=(int8x5 int8x4 int4x6 bf16x3 int8x1)
 
 _ENV_PARALLEL="${PARALLEL:-}"
 _ENV_CONTEXT="${CONTEXT:-}"
@@ -178,6 +178,9 @@ select_profile() {
     int8x4) PARALLEL=4; KV_DTYPE=int8; EST_GIB=97.8 ;;
     int4x6) PARALLEL=6; KV_DTYPE=int4; EST_GIB=97.7 ;;
     bf16x3) PARALLEL=3; KV_DTYPE=bf16; EST_GIB=102.1 ;;
+    # One full-window stream, to share the pool with a second server (the
+    # Clef-Flash recipe). Measured: host MemAvailable 33.7 GiB once loaded.
+    int8x1) PARALLEL=1; KV_DTYPE=int8; EST_GIB=88.18 ;;
     *)
       printf 'error: unknown profile: %s (expected one of: %s)\n' \
         "${PROFILE}" "${KNOWN_PROFILES[*]}" >&2

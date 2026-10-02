@@ -4,7 +4,7 @@
 #
 # Assert everything start.sh depends on, before a ~2.5 minute load.
 #
-#   ./preflight.sh [profile]      profile: int8x4 (default) | int8x5 | int4x6 | bf16x3
+#   ./preflight.sh [profile]      profile: int8x4 (default) | int8x5 | int4x6 | bf16x3 | int8x1 (co-tenant)
 #
 # Exit 0 when every check passes, 1 otherwise. Warnings do not fail.
 

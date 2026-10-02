@@ -16,6 +16,7 @@
 #
 #   ./start.sh                  int8x4: 4 streams x 262,144 tokens, int8 KV
 #   ./start.sh int8x5           upstream's 5 streams; tight on this host
+#   ./start.sh int8x1           1 stream, leaving room for a second server (Clef-Flash)
 #   ./start.sh restart          replace the running server (checks pass first)
 #   ./start.sh --no-launch      print the docker command, start nothing
 #   PARALLEL=6 CONTEXT=220000 ./start.sh

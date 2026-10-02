@@ -61,9 +61,52 @@ prints the real one at every start.
 | `int8x5` | 5 x 262,144 | int8 | 1,310,720 | 102.6 GiB | upstream's default; tight on this host |
 | `int4x6` | 6 x 262,144 | int4 | 1,572,864 | 97.7 GiB | int4 changes output; quality not measured |
 | `bf16x3` | 3 x 262,144 | bf16 | 786,432 | 102.1 GiB | full-precision KV |
+| `int8x1` | 1 x 262,144 | int8 | 262,144 | 88.18 GiB | one stream, to share the box; see below |
+
+**`int8x1` is the co-tenant profile.** One full-window stream, measured here at a startup estimate of 88.18 GiB
+with 33.7 GiB of `MemAvailable` left, which is room for
+[`Clef-Flash-FP8-transformers`](../Clef-Flash-FP8-transformers/) (~19 GiB) with its 12 GiB floor intact. Start this
+one first: TensorFold reads `MemAvailable` once at start and holds back a tenth of RAM from it, so with Clef already
+loaded even one stream would barely be admitted. With both up, neither watchdog recorded a low sample through a
+50k-token prefill benchmark here and Clef's benchmark at the same time. Both servers then share one GPU, so each
+runs at roughly half speed while the other is busy: prefill 2,455 -> 1,107 tok/s and sampled decode 59 -> 24 tok/s
+with Clef saturated. With Clef idle, Qwen measured its usual numbers (59.0 tok/s sampled, 74.0 greedy).
 
 `PARALLEL`, `CONTEXT` and `KV_DTYPE` override any profile, for example `PARALLEL=6 CONTEXT=220000 ./start.sh`.
 TensorFold refuses a setting that does not fit before any weights load, and names a window that would.
+
+### Switching streams with Clef-Flash alongside
+
+Each extra 262,144-token int8 stream costs about 3.2 GiB. That's derived from the `int8x4` (97.8 GiB) and `int8x1`
+(88.18 GiB) startup estimates, not measured per stream. Clef's preflight wants 30.8 GiB of `MemAvailable` before it
+starts (its load peak plus floor) and 12 GiB left once it's up. So, with Qwen started first:
+
+| Qwen | `MemAvailable` before Clef | Clef | Status |
+|---|---:|---|---|
+| `int8x1` (1 x 262k) | 33.7 GiB | fits, ~14.9 GiB left | measured |
+| `PARALLEL=2` (2 x 262k) | ~30.5 GiB | **refused** by Clef's preflight; would leave ~11.8 GiB | estimate |
+| `PARALLEL=2 CONTEXT=131072` | ~33.7 GiB | about the same as `int8x1` | estimate, not run |
+| `int8x4` (default) | ~24 GiB | refused | estimate |
+
+Restarting Qwen *while Clef is up* is a different case. TensorFold's budget is `MemAvailable` minus a 12.2 GiB
+reserve, read at start, so with Clef holding ~19 GiB it has about 90 GiB to admit into. One stream fits; two
+probably don't, and TensorFold refuses before loading anything. So to change streams, stop Clef first, then restart
+in this order:
+
+```bash
+../Clef-Flash-FP8-transformers/stop.sh
+
+./start.sh restart                                   # back to int8x4, Qwen alone
+PARALLEL=2 ./start.sh restart int8x1                 # 2 x 262k, Qwen alone
+PARALLEL=2 CONTEXT=131072 ./start.sh restart int8x1  # 2 x 131k; may leave room for Clef (unmeasured)
+./start.sh restart int8x1                            # back to the co-tenant profile
+
+../Clef-Flash-FP8-transformers/start.sh              # its preflight decides whether it fits
+```
+
+Clef's preflight is the authority: it reads the real `MemAvailable` and refuses to start if either floor would be
+broken. Overriding the floors (`HOST_FLOOR_GIB`, `LOAD_FLOOR_GIB`) puts Clef where heavy Qwen traffic gets it killed.
+See [Clef's README](../Clef-Flash-FP8-transformers/README.md#memory).
 
 ## Memory
 
