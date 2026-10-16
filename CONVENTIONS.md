@@ -195,8 +195,10 @@ itself that way must therefore cap its budget *from the host side* and leave an
 explicit reserve, rather than trusting a utilization fraction. See
 `Qwen3.8-Flash-Next-NVFP4-vLLM` for a worked example (`HOST_RESERVE_GIB`, a
 cgroup cap, and a memory watchdog). `Qwen3.8-Flash-Next-MLX4-TensorFold` is the other case:
-TensorFold's budget is `MemAvailable` minus a fixed tenth of RAM with no knob,
-so that recipe adds the cgroup cap and the watchdog around it instead.
+TensorFold's budget is `MemAvailable` minus a reserve (a tenth of RAM unless
+`TENSORFOLD_MEMORY_RESERVE_GIB` is set), and since v0.6 its caches grow under
+traffic down to that reserve plus 2 GiB, so that recipe keeps the reserve above
+its watchdog's floor and adds the cgroup cap and the watchdog around it.
 
 ### Co-tenancy
 

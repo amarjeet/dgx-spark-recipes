@@ -14,9 +14,9 @@
 #
 #   ./start.sh [restart] [profile] [--no-launch]
 #
-#   ./start.sh                  int8x4: 4 streams x 262,144 tokens, int8 KV
-#   ./start.sh int8x5           upstream's 5 streams; tight on this host
-#   ./start.sh int8x1           1 stream, leaving room for a second server (Clef-Flash)
+#   ./start.sh                  int8x5: 5 streams x 262,144 tokens, int8 KV, image/video input
+#   ./start.sh int8x4           4 streams
+#   ./start.sh int8x1           1 stream, text only, leaving room for a second server (Clef-Flash)
 #   ./start.sh restart          replace the running server (checks pass first)
 #   ./start.sh --no-launch      print the docker command, start nothing
 #   PARALLEL=6 CONTEXT=220000 ./start.sh
@@ -67,22 +67,22 @@ DOCKER_ARGS=(
   # Host-side cap. GPU allocations are not charged to it on GB10.
   --memory "${CONTAINER_MEM_GIB}g" --memory-swap "${CONTAINER_MEM_GIB}g"
   -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1
-  -e "TENSORFOLD_PREFILL_ROWS=${TENSORFOLD_PREFILL_ROWS}"
-  -e "TENSORFOLD_MTP_COPY=${TENSORFOLD_MTP_COPY}"
-  -e "TENSORFOLD_NO_UPDATE_CHECK=${TENSORFOLD_NO_UPDATE_CHECK}"
   # Read-only: serving reads the snapshot and writes nothing into the HF cache.
   -v "${HF_HOME}:/root/.cache/huggingface:ro"
   -v "${TRITON_CACHE_HOST}:/root/.triton"
   -v "${TORCH_EXTENSIONS_HOST}:/root/.cache/torch_extensions"
   -v "${TENSORFOLD_CACHE_HOST}:/root/.cache/tensorfold"
 )
+# The recipe's switches, each only when set: empty leaves TensorFold's own
+# choice (an empty TENSORFOLD_PREFILL_ROWS is not the same as an unset one).
+for name in "${RECIPE_TF_VARS[@]}"; do
+  [[ -n "${!name}" ]] && DOCKER_ARGS+=(-e "${name}=${!name}")
+done
+[[ -n "${MEMORY_RESERVE_GIB}" ]] && DOCKER_ARGS+=(-e "TENSORFOLD_MEMORY_RESERVE_GIB=${MEMORY_RESERVE_GIB}")
 # Any other TENSORFOLD_* / TF_* switch in the environment reaches the server,
 # as upstream does.
 while IFS='=' read -r name _; do
-  case "${name}" in
-    TENSORFOLD_PREFILL_ROWS|TENSORFOLD_MTP_COPY|TENSORFOLD_NO_UPDATE_CHECK) ;;
-    *) DOCKER_ARGS+=(-e "${name}") ;;
-  esac
+  [[ " ${RECIPE_TF_VARS[*]} TENSORFOLD_MEMORY_RESERVE_GIB " == *" ${name} "* ]] || DOCKER_ARGS+=(-e "${name}")
 done < <(env | grep -E '^(TENSORFOLD|TF)_[A-Z0-9_]+=' | grep -vE '^TF_(VERSION|REPO|COMMIT)=' || true)
 
 # The image sets TRITON_CACHE_DIR and TORCH_EXTENSIONS_DIR to /cache/...
@@ -92,7 +92,8 @@ done < <(env | grep -E '^(TENSORFOLD|TF)_[A-Z0-9_]+=' | grep -vE '^TF_(VERSION|R
 # their own defaults, which are the mounts above.
 CMD=(env -u TORCH_EXTENSIONS_DIR -u TRITON_CACHE_DIR tensorfold serve "${SNAPSHOT_CTR}" "${SERVE_ARGS[@]}")
 
-info "Profile ${PROFILE}: ${PARALLEL} x ${CONTEXT} tokens, ${KV_DTYPE} KV$([[ "${PLE_ON_SSD}" == 1 ]] && printf ', n-gram tables on SSD')"
+info "Profile ${PROFILE}: ${PARALLEL} x ${CONTEXT} tokens, ${KV_DTYPE} KV$([[ "${PLE_ON_SSD}" == 1 ]] && printf ', n-gram tables on SSD')$([[ "${VISION}" == 1 ]] && printf ', image/video input')"
+info "Reserve $([[ -n "${MEMORY_RESERVE_GIB}" ]] && printf '%s GiB (TENSORFOLD_MEMORY_RESERVE_GIB)' "${MEMORY_RESERVE_GIB}" || printf "TensorFold's own, %s" "$(human_bytes "$(tf_reserve_bytes)")")"
 info "Model   ${MODEL_ID} @ ${MODEL_REVISION:0:12}"
 info "Image   ${IMAGE}"
 info "Listen  ${HOST}:${PORT}   model id ${SERVED_MODEL_NAME}${SERVED_ALIAS:+ (alias ${SERVED_ALIAS})}"

@@ -8,8 +8,9 @@ Checks, in order:
   2. a greedy non-thinking answer is correct -- a wrong activation or KV path
      still produces fluent text, so fluency proves nothing; arithmetic does
   3. thinking mode puts its trace in reasoning_content and the answer in content
-  4. /health carries the live token counters (patch 0002)
-  5. a tool call's array argument arrives as a JSON array (patch 0001)
+  4. /health carries the live token counters
+  5. a tool call's array argument arrives as a JSON array (typed by the schema)
+  6. image input: the model names the shapes in a generated PNG (skipped with VISION=0 or one stream)
 
 Usage: scripts/smoke.py      (PORT, SMOKE_HOST, SERVED_MODEL_NAME, SERVED_ALIAS)
 Exit code 1 on any failure.
@@ -88,6 +89,13 @@ def main() -> int:
     tool = subprocess.run([sys.executable, str(Path(__file__).with_name("toolcheck.py"))],
                           env={**os.environ, "API_URL": BASE}, capture_output=True, text=True)
     result(tool.returncode == 0, (tool.stdout.strip().splitlines() or ["no output"])[-1])
+
+    streams = (h.get("streams") or {}).get("max", 1)    # no "streams" on a one-stream server, which runs text only
+    if os.environ.get("VISION", "1") == "1" and streams >= 2:
+        vision = subprocess.run([sys.executable, str(Path(__file__).with_name("visioncheck.py"))],
+                                env={**os.environ, "API_URL": BASE, "SERVED_MODEL_NAME": MODEL},
+                                capture_output=True, text=True)
+        result(vision.returncode == 0, (vision.stdout.strip().splitlines() or ["no output"])[-1])
 
     print("smoke: all checks passed" if failures == 0 else f"smoke: {failures} check(s) failed")
     return 1 if failures else 0

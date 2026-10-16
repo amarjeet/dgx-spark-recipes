@@ -1,20 +1,20 @@
 # Qwen3.8-Flash-Next · MLX 4-bit · TensorFold
 
 Serves [Qwen3.8 Flash Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) from one DGX Spark through an
-OpenAI-compatible API, with **four concurrent requests at the full 262,144-token window**, or upstream's five. It runs
-[TensorFold](https://github.com/ashhart/TensorFold) v0.3.6.2 in NVIDIA's PyTorch container, with eight patches that
-change speed and never an output token.
+OpenAI-compatible API, with **five concurrent requests at the full 262,144-token window**, and image and video
+input. It runs [TensorFold](https://github.com/ashhart/TensorFold) v0.6.1 in NVIDIA's PyTorch container, with one
+patch that adds video, many images and speed, and changes no output token.
 
 Port of [MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold)
-at `4cd9956`. What changed in the port is under [Port notes](#port-notes).
+at `4c0dea8` (upstream's recipe 0.6.0). What changed in the port is under [Port notes](#port-notes).
 
 | | |
 |---|---|
-| Checkpoint | [`Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP`](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP) @ `dadefa8066e3`, MLX 4-bit, group size 32, with the MTP draft head. 35 files, 105.46 GiB, every one checksummed in `manifests/mlx4.json` |
-| Runtime | TensorFold v0.3.6.2 (`71377a5`) + `patches/*.patch` (hash `82e893ed2bcc`) on `nvcr.io/nvidia/pytorch:26.07-py3` |
+| Checkpoint | [`Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP`](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP) @ `dadefa8066e3`, MLX 4-bit, group size 32, with the MTP draft head and vision tower. 35 files, 105.46 GiB, every one checksummed in `manifests/mlx4.json` |
+| Runtime | TensorFold v0.6.1 (`17c73e1`) + `patches/*.patch` (hash `797af1d9df4d`) on `nvcr.io/nvidia/pytorch:26.07-py3` |
 | Image | upstream's prebuilt image pinned by digest, or built locally; verified either way |
 | Endpoint | `:8011`, model id `qwen3.8-flash-next`, alias `Qwen3.8-Flash-Next` |
-| KV pool | 4 streams x 262,144 = 1,048,576 tokens, int8 KV (default here); upstream's 5 streams = 1,310,720 is `int8x5` |
+| KV pool | 5 streams x 262,144 = 1,310,720 tokens, int8 KV (default, as upstream) |
 
 **This recipe and [`Qwen3.8-Flash-Next-NVFP4-vLLM`](../Qwen3.8-Flash-Next-NVFP4-vLLM/) serve the same model** from
 different checkpoints and engines. They cannot run at the same time: each wants most of the unified pool. Both answer
@@ -29,7 +29,7 @@ cd dgx-spark-recipes/recipes/Qwen3.8-Flash-Next-MLX4-TensorFold
 ./download.sh           # 105.46 GiB into the HF cache, pinned revision, checksum-verified, resumable
 ./preflight.sh          # image + patches, snapshot, port, GPU tenancy, memory budget, serve arguments
 ./start.sh              # serves on :8011; runs preflight first
-./scripts/smoke.py      # arithmetic, thinking, typed tool calls, live counters
+./scripts/smoke.py      # arithmetic, thinking, typed tool calls, live counters, image input
 ./status.sh
 ./stop.sh
 ```
@@ -45,60 +45,68 @@ curl -s http://<spark>:8011/v1/chat/completions -H 'Content-Type: application/js
 }'
 ```
 
-The model thinks before it answers, into `reasoning_content`, so give replies room in `max_tokens`. Per request,
+Images and video go in OpenAI's content parts, as data URLs (`VISION_URLS=1` also fetches `https://` ones):
+
+```bash
+curl -s http://<spark>:8011/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model": "qwen3.8-flash-next",
+  "messages": [{"role": "user", "content": [
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+    {"type": "text", "text": "What is in this picture?"}]}]
+}'
+```
+
+The model thinks before it answers, into `reasoning_content`. A request without `max_tokens` gets 32,768 tokens
+(`MAX_TOKENS`), enough for thinking to finish; TensorFold's own default, 4,096, could end a reply before it answered. Per request,
 `"chat_template_kwargs": {"enable_thinking": false}` answers directly and `{"reasoning_effort": "low"}` (or `xhigh`)
 sets the effort. A top-level OpenAI `reasoning_effort` field is ignored.
 
 ## Profiles
 
-One checkpoint, so the profiles are KV-pool trade-offs. TensorFold gives every stream a full window, so the pool is
-streams x window. The estimate column is TensorFold's own startup estimate as upstream reported it; the server
-prints the real one at every start.
+One checkpoint, so the profiles are KV-pool trade-offs. TensorFold admits every stream at a full window, so the
+pool is streams x window. The estimate column is TensorFold's own startup estimate, measured here on v0.6.1; the
+server prints the real one at every start.
 
 | Profile | Streams x window | KV | Pool | Estimate | Note |
 |---|---|---|---:|---:|---|
-| `int8x4` | 4 x 262,144 | int8 | 1,048,576 | 97.8 GiB | **default here**; see [Memory](#memory) |
-| `int8x5` | 5 x 262,144 | int8 | 1,310,720 | 102.6 GiB | upstream's default; tight on this host |
-| `int4x6` | 6 x 262,144 | int4 | 1,572,864 | 97.7 GiB | int4 changes output; quality not measured |
-| `bf16x3` | 3 x 262,144 | bf16 | 786,432 | 102.1 GiB | full-precision KV |
-| `int8x1` | 1 x 262,144 | int8 | 262,144 | 88.18 GiB | one stream, to share the box; see below |
+| `int8x5` | 5 x 262,144 | int8 | 1,310,720 | 85.39 GiB | **default**, as upstream; image and video input |
+| `int8x4` | 4 x 262,144 | int8 | 1,048,576 | 85.18 GiB | the v0.3.6.2 default here |
+| `int4x6` | 6 x 262,144 | int4 | 1,572,864 | not run | int4 changes output; quality not measured |
+| `bf16x3` | 3 x 262,144 | bf16 | 786,432 | not run | full-precision KV |
+| `int8x1` | 1 x 262,144 | int8 | 262,144 | 87.57 GiB | one stream, text only, to share the box; see below |
 
-**`int8x1` is the co-tenant profile.** One full-window stream, measured here at a startup estimate of 88.18 GiB
-with 33.7 GiB of `MemAvailable` left, which is room for
-[`Clef-Flash-FP8-transformers`](../Clef-Flash-FP8-transformers/) (~19 GiB) with its 12 GiB floor intact. Start this
-one first: TensorFold reads `MemAvailable` once at start and holds back a tenth of RAM from it, so with Clef already
-loaded even one stream would barely be admitted. With both up, neither watchdog recorded a low sample through a
-50k-token prefill benchmark here and Clef's benchmark at the same time. Both servers then share one GPU, so each
-runs at roughly half speed while the other is busy: prefill 2,455 -> 1,107 tok/s and sampled decode 59 -> 24 tok/s
-with Clef saturated. With Clef idle, Qwen measured its usual numbers (59.0 tok/s sampled, 74.0 greedy).
+The estimates are close because v0.6.1 counts weights and starting caches, not full windows: the caches grow
+later, under traffic (see [Memory](#memory)). A lone stream is the exception and is allocated whole, which is why
+`int8x1` estimates highest.
+
+**`int8x1` is the co-tenant profile.** One full-window stream, measured here with 33.0 GiB of `MemAvailable` left,
+both idle and after a 226k-token prompt. That is room for
+[`Clef-Flash-FP8-transformers`](../Clef-Flash-FP8-transformers/) (~19 GiB) with its 12 GiB floor intact, about
+0.7 GiB less than on v0.3.6.2. It is **text only**: TensorFold's Flash Next image input needs two or more streams,
+so the profile sets `VISION=0`, and preflight refuses `VISION=1` with one stream. Start this one first, since
+TensorFold reads `MemAvailable` once at start. Measured on v0.3.6.2 with both up: each server runs at roughly half
+speed while the other is busy (prefill 2,455 -> 1,107 tok/s, sampled decode 59 -> 24 tok/s with Clef saturated).
+The pair has not been re-run on v0.6.1.
 
 `PARALLEL`, `CONTEXT` and `KV_DTYPE` override any profile, for example `PARALLEL=6 CONTEXT=220000 ./start.sh`.
 TensorFold refuses a setting that does not fit before any weights load, and names a window that would.
 
 ### Switching streams with Clef-Flash alongside
 
-Each extra 262,144-token int8 stream costs about 3.2 GiB. That's derived from the `int8x4` (97.8 GiB) and `int8x1`
-(88.18 GiB) startup estimates, not measured per stream. Clef's preflight wants 30.8 GiB of `MemAvailable` before it
-starts (its load peak plus floor) and 12 GiB left once it's up. So, with Qwen started first:
+Keep `int8x1` while Clef is up. With two or more streams, v0.6.1 grows the caches *after* Clef has started, so Clef's
+preflight check at its own start no longer bounds what Qwen will take. TensorFold's gate stops growth near
+`MemAvailable` 14.2 GiB (its 12.2 GiB reserve plus 2 GiB), just above Clef's 12 GiB floor. But a stream decoding
+alone grows past the gate to finish its reply, up to one more window (about 4.5 GiB at int8), which can put Clef
+under its floor. Not measured with Clef running.
 
-| Qwen | `MemAvailable` before Clef | Clef | Status |
-|---|---:|---|---|
-| `int8x1` (1 x 262k) | 33.7 GiB | fits, ~14.9 GiB left | measured |
-| `PARALLEL=2` (2 x 262k) | ~30.5 GiB | **refused** by Clef's preflight; would leave ~11.8 GiB | estimate |
-| `PARALLEL=2 CONTEXT=131072` | ~33.7 GiB | about the same as `int8x1` | estimate, not run |
-| `int8x4` (default) | ~24 GiB | refused | estimate |
-
-Restarting Qwen *while Clef is up* is a different case. TensorFold's budget is `MemAvailable` minus a 12.2 GiB
-reserve, read at start, so with Clef holding ~19 GiB it has about 90 GiB to admit into. One stream fits; two
-probably don't, and TensorFold refuses before loading anything. So to change streams, stop Clef first, then restart
-in this order:
+Restarting Qwen *while Clef is up* no longer protects Clef either. With Clef holding ~19 GiB, TensorFold's budget
+is about 87 GiB, and v0.6.1's estimates (85.2 to 85.4 GiB) fit it, so more streams are admitted and then grow into
+Clef's room. So to change streams, stop Clef first, then restart in this order:
 
 ```bash
 ../Clef-Flash-FP8-transformers/stop.sh
 
-./start.sh restart                                   # back to int8x4, Qwen alone
-PARALLEL=2 ./start.sh restart int8x1                 # 2 x 262k, Qwen alone
-PARALLEL=2 CONTEXT=131072 ./start.sh restart int8x1  # 2 x 131k; may leave room for Clef (unmeasured)
+./start.sh restart                                   # back to int8x5, Qwen alone
 ./start.sh restart int8x1                            # back to the co-tenant profile
 
 ../Clef-Flash-FP8-transformers/start.sh              # its preflight decides whether it fits
@@ -110,72 +118,86 @@ See [Clef's README](../Clef-Flash-FP8-transformers/README.md#memory).
 
 ## Memory
 
-TensorFold sizes itself. Its budget is `MemAvailable` minus the larger of 4 GiB and a tenth of `MemTotal`, read at
-start, and there is no knob for that reserve. On this host a tenth is 12.2 GiB, so an idle Spark gives a budget of
-about 104 to 106 GiB. TensorFold refuses a profile whose estimate does not fit, before any weights load.
+TensorFold sizes itself. Its budget is `MemAvailable`, read at start, minus a reserve: `TENSORFOLD_MEMORY_RESERVE_GIB`,
+or the larger of 4 GiB and a tenth of `MemTotal` (12.2 GiB here) when unset. It refuses a profile whose full windows
+do not fit, before any weights load.
 
-That leaves the host roughly the reserve and no more, and on unified memory an exhausted pool hangs the kernel
-instead of raising an OOM. So the recipe adds two host-side guards around TensorFold's admission:
+**What changed in v0.6.** The KV caches are no longer allocated whole at load. Each stream's slot starts small and
+grows with its context. Before each growth, a gate checks the live `MemAvailable` for the growth plus 2 GiB on top
+of the same reserve. So the reserve is also the floor the server grows down to under traffic. When the gate refuses,
+a request waits, or with several streams decoding the newest is ended with an error naming the cause. A stream
+decoding alone grows anyway.
+
+Upstream sets the reserve to 2 GiB, the knob's minimum, and measured `MemAvailable` down to 2.9 GiB through five
+~236k prompts. That would trip this recipe's watchdog. Here the reserve stays TensorFold's own 12.2 GiB, and five
+full windows are still admitted on an idle Spark: 85.39 within 105.87 GiB. Set `TENSORFOLD_MEMORY_RESERVE_GIB` to
+override it; preflight warns when the floor it implies is under the watchdog's.
+
+On unified memory an exhausted pool hangs the kernel instead of raising an OOM. So the recipe keeps two host-side
+guards around TensorFold's own:
 
 - **A cgroup cap** of `CONTAINER_MEM_GIB`, 24 GiB. GPU allocations are not charged to it on GB10, so it bounds the
-  host-side footprint only. The measured peak was 12.0 GiB across the `int8x5` load and
-  benchmarks, and 6.6 GiB on `int8x4`.
+  host-side footprint only.
 - **A watchdog**, `scripts/memwatch.sh`. It stops the container when `MemAvailable` stays under 6 GiB, or `MemFree`
   stays under 2 GiB while `MemAvailable` is under 10 GiB, for five samples two seconds apart. Its log is in
   `$OUT_DIR/logs/`.
 
-**Why the default is `int8x4`, not upstream's `int8x5`.** Measured on this host, from a fresh start through the
-benchmarks below:
+**Worst case, measured.** Every stream filled to ~226k tokens at once, with the default reserve:
 
-| Profile | Startup estimate | Lowest MemAvailable | Watchdog low samples |
-|---|---:|---:|---|
-| `int8x5` | 102.60 of 105.71 GiB | 7.7 GiB | `MemFree` under 2 GiB for 3 of 5 consecutive samples |
-| `int8x4` | 97.78 of 104.20 GiB | 17.9 GiB | none |
+| Profile | Requests | Completed | Lowest `MemAvailable` | Watchdog |
+|---|---:|---:|---:|---|
+| `int8x5` | 5 x ~226k | 5 | 14.4 GiB | no trip |
+| `int8x4` | 4 x ~226k | 4 | 18.5 GiB | no trip |
+| `int8x1` | 1 x ~226k | 1 | 33.0 GiB | no trip |
 
-Both dips came during the KV allocation at load, not under traffic. `int8x5` ran every benchmark here, but it
-operates within about a gigabyte of the point where the NVIDIA driver starts refusing allocations. If the watchdog
-trips during an `int8x5` load, the start fails and the host is fine. Use `./start.sh int8x5` when the fifth stream
-matters more than the margin.
+`int8x5` held at the gate's floor, as designed. `MemFree` dipped to 1.8 GiB there, which is reclaimable page cache:
+the watchdog counts `MemFree` only under 10 GiB of `MemAvailable`. On v0.3.6.2, `int8x5` reached 7.7 GiB during its
+*load*, which is why this recipe defaulted to `int8x4` until now.
 
 ## Measured on this host
 
-GB10, 121.7 GiB unified memory, kernel driver 580.173.02 (the container runs CUDA 13.3 in forward-compatibility
-mode). Image `tensorfold-qwen38:v0.3.6.2-82e893ed2bcc`, pulled by digest and verified. Nothing else on the GPU.
-Measured through the OpenAI API with `./bench.sh`, on 2026-09-29.
+GB10, 121.7 GiB unified memory, kernel driver 580.178.04 (the container runs CUDA 13.3 in forward-compatibility
+mode). Image `tensorfold-qwen38:v0.6.1-797af1d9df4d`, pulled by digest and verified. Nothing else on the GPU.
+Measured through the OpenAI API with `./bench.sh`, on 2026-10-02. The v0.3.6.2 column is this recipe's earlier
+port, same host, 2026-09-29.
 
-**Startup.** The first start compiles CUDA kernels: 239 s to ready, 80 to 90 s of it kernel warm-up. A warm start
-reuses `~/.triton` and `~/.cache/torch_extensions` and takes 149 to 151 s, with kernels warmed in 3.9 s.
+**Startup.** The first start on v0.6.1 builds its CUDA extensions and was ready in 105 s. Later starts, with the
+weights still in the page cache, answered in 24 to 30 s.
 
-**Prefill**, `int8x5`, fresh random prose per run so the prompt cache never hits:
+**Prefill**, fresh random prose per run so the prompt cache never hits:
 
-| Prompt | Prefill | Rate | TTFT |
+| Prompt | `int8x5` v0.6.1 | `int8x4` v0.6.1 | `int8x5` v0.3.6.2 |
 |---:|---:|---:|---:|
-| 855 | 0.50 s | 1,724 tok/s | 0.50 s |
-| 3,202 | 1.47 s | 2,176 tok/s | 1.48 s |
-| 12,642 | 5.09 s | 2,483 tok/s | 5.12 s |
-| 50,355 | 20.77 s | 2,425 tok/s | 20.86 s |
+| ~810 | 0.65 s | 0.57 s | 0.50 s |
+| ~3,170 | 2.32 s | 2.15 s | 1.47 s |
+| ~12,600 | 5.96 s | 5.29 s | 5.09 s |
+| ~50,300 | 21.18 s (2,374 tok/s) | 20.52 s (2,451 tok/s) | 20.77 s (2,425 tok/s) |
 
-This matches upstream's ~2,340 to 2,480 tok/s over 3k to 50k tokens.
+Short prompts are slower than on v0.3.6.2. The recipe now prefills in 2,048-row pieces, where v0.3.6.2 used 4,096.
+Upstream measured 2,048 faster from about 5k tokens with the n-gram tables on SSD, and slower below that, as here.
+The first prefill run after a fresh extension build was up to twice as slow; the table is a warm run.
 
-**Needle.** A passphrase at 60% depth of a 194,893-token prompt, asked greedily, was recalled on both profiles.
-Prefill took 96.0 s on `int8x5` and 93.9 s on `int8x4`. Upstream reports ~97 s at ~195k.
+**Needle.** A passphrase at 60% depth of a 194,851-token prompt, asked greedily, was recalled on `int8x4`; prefill
+took 98.6 s.
 
-**Decode, single request:** 71.7 tok/s on greedy code and 59.0 tok/s on sampled chat, medians of five, against
-upstream's 62.4 tok/s on prose.
+**Decode, single request:** 68.1 tok/s on greedy code and 63.8 tok/s on sampled chat (`int8x5`, medians of five),
+against 71.7 and 59.0 on v0.3.6.2.
 
 **Decode, concurrent** (`scripts/bench_concurrent.py`: 512-token essays, thinking off, aggregate over first to last
-token):
+token, tok/s):
 
-| Requests | `int8x5` aggregate | `int8x5` per request | `int8x4` aggregate | `int8x4` per request | Upstream, `int8x5` |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 54.4 | 54.4 | 54.4 | 54.4 | 62.4 |
-| 2 | 75.0 | 38.2 | 74.5 | 38.0 | 90.5 |
-| 4 | 89.4 | 22.9 | 98.2 | 25.2 | 106.7 |
-| 5 | 100.6 | 21.5 | 85.9 | 25.1 | 119.3 |
+| Requests | `int8x5` aggregate | per request | `int8x4` aggregate | per request | `int8x5` v0.3.6.2 | Upstream, `int8x5` v0.3.6.2 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 52.9 | 52.9 | 50.1 | 50.1 | 54.4 | 62.4 |
+| 2 | 76.8 | 40.0 | 65.2 | 33.7 | 75.0 | 90.5 |
+| 4 | 100.8 | 25.7 | 93.0 | 23.7 | 89.4 | 106.7 |
+| 5 | 107.7 | 22.3 | 85.2 | 26.0 | 100.6 | 119.3 |
 
-These run 12 to 18% under upstream's. The workloads differ: upstream's prompts are not published, and MTP draft
-acceptance depends on the text, so this gap is not evidence of a slower host. On `int8x4` a fifth request waits for a
-stream, which is why its 5-request aggregate falls.
+Upstream's prompts are not published, and MTP draft acceptance depends on the text, so the gap to upstream's
+column is not evidence of a slower host. On `int8x4` a fifth request waits for a stream.
+
+**Checks.** `scripts/smoke.py` passed on `int8x5` and `int8x1`: arithmetic, alias, thinking, live counters, typed
+tool arguments, and on `int8x5` image input (`scripts/visioncheck.py`). Video was not tested here.
 
 ## Configuration
 
@@ -189,8 +211,13 @@ Every knob lives in `profiles.sh` and can be set from the environment.
 | `TEMPERATURE` / `TOP_P` / `TOP_K` | `1.0` / `0.95` / `20` | Qwen's thinking-mode sampling; a request's own values win |
 | `THINKING` | `1` | `0` answers directly unless a request asks to think |
 | `REASONING_EFFORT` | `medium` | TensorFold's server default, which adds no system-prompt text |
-| `TENSORFOLD_PREFILL_ROWS` | `4096` | rows per prompt chunk (patch 0007); TensorFold's own default is 2048 |
-| `TENSORFOLD_MTP_COPY` | `1` | prompt-lookup drafts for replies that repeat the prompt (patch 0008; needs 2+ streams) |
+| `MAX_TOKENS` | `32768` | reply length for a request without `max_tokens`; TensorFold's own 4,096 can end a thinking reply before it answers |
+| `VISION` | `1` | image and video input (`--vision`); `0` is text only |
+| `VISION_URLS` | `0` | `1` also fetches public `https://` image and video URLs; the default takes data URLs only |
+| `VISION_MAX_IMAGES` | `50` | images a request may carry, a chat's turns all counted; they share `TENSORFOLD_IMAGE_TOKENS` (16,384) |
+| `TENSORFOLD_MEMORY_RESERVE_GIB` | per profile | what TensorFold leaves out of `MemAvailable` at start, and the floor its caches grow down to; see [Memory](#memory) |
+| `TENSORFOLD_PREFILL_ROWS` | `2048` | prompt piece rows while `PLE_ON_SSD=1`; empty leaves TensorFold's choice |
+| `TENSORFOLD_MTP_COPY` | `1` | prompt-lookup drafts for replies that repeat the prompt (needs 2+ streams) |
 | `EXTRA_SERVE_ARGS` | *(empty)* | appended to `tensorfold serve`, so they win; checked by TensorFold's own parser in preflight |
 | `PORT` / `HOST` | `8011` / `0.0.0.0` | published port and bind address; there is no API key |
 | `CONTAINER_MEM_GIB` | `24` | host-side cgroup cap |
@@ -200,25 +227,22 @@ Every knob lives in `profiles.sh` and can be set from the environment.
 
 Any other `TENSORFOLD_*` or `TF_*` variable in the environment is passed into the container, as upstream does.
 
-## What the patches change
+## What the patch changes
 
-Upstream's eight patches, carried byte for byte (unified diffs against TensorFold's site-packages, applied with
-`patch -p0`). `build.sh` proves each one is present in the image by reverse-applying it in dry-run mode, rather than
-trusting the image label.
+Upstream's one patch, `0002-flash-next-v061`, carried byte for byte (a unified diff against TensorFold's
+site-packages, applied with `patch -p0`). It replaces the eight v0.3.6.2 patches: typed tool parameters and the live
+`/health` counters are in TensorFold itself now, and so is Flash Next image input (TensorFold #146, adapted from
+upstream's own patch). What the patch still adds:
 
-| Patch | Change | Effect upstream measured |
-|---|---|---|
-| `0001-cuda-typed-tool-parameters` | tool-call arguments decoded by the tool's JSON schema | arrays, numbers and objects arrive typed ([TensorFold #75](https://github.com/ashhart/TensorFold/pull/75)) |
-| `0002-cuda-live-token-counters` | `/health` reports live token totals | monitoring ([#79](https://github.com/ashhart/TensorFold/pull/79)) |
-| `0003-flash-next-ssd-read-ahead` | a chunk's n-gram rows read from SSD while the GPU runs the previous chunk | multi-chunk prefill +50% |
-| `0004-flash-next-ssd-native-reader` | those reads on a C++ thread pool outside the GIL | short-prompt TTFT -35%, decode +4% |
-| `0005-flash-next-qsa-tiled-select` | sparse-attention block selection no longer spills registers past 128k | 149k prompts 25% faster |
-| `0006-cuda-stream-draft-stats` | `drafted` / `accepted` counts in concurrent requests' stats | observability |
-| `0007-flash-next-prefill-rows` | configurable prompt chunk size (port of [#40](https://github.com/ashhart/TensorFold/pull/40)) | +2-5% at 4,096 rows |
-| `0008-flash-next-copy-drafts` | drafts copied from earlier text when the reply repeats the prompt | +6% on quoting replies |
+- **video input**, and up to 50 images a request sharing 16,384 tokens (`--vision-max-images`,
+  `TENSORFOLD_IMAGE_TOKENS`; TensorFold alone takes 4)
+- **copy drafts**: prompt-lookup drafts ahead of MTP when the reply repeats the prompt (`TENSORFOLD_MTP_COPY`)
+- **SSD read-ahead** for the n-gram tables, and `TENSORFOLD_PREFILL_ROWS` as an override of TensorFold's own choice
+- the first token before the next draft round, no MTP logits while prompts absorb, and 96 MiB request bodies
 
-Upstream checked that outputs are unchanged by comparing reply hashes against unpatched TensorFold, sampled and
-greedy, up to 149k tokens. Any request can send `"draft": false` for the serial one-token-a-round reference.
+`build.sh` proves the patch is in the image by reverse-applying it, rather than trusting the label. Upstream checked
+that output is unchanged: greedy token ids equal across 34 replies between v0.6.0 and v0.6.1, and drafted replies
+equal serial ones. Any request can send `"draft": false` for the serial one-token-a-round reference.
 
 ## Port notes
 
@@ -226,19 +250,25 @@ greedy, up to 149k tokens. Any request can send `"draft": false` for the serial 
   the pinned snapshot directory, and `download.sh` verifies all 35 files against the manifest: SHA-256 for the
   weights, the git blob id for the small files.
 - **Pinned image.** The prebuilt image is pulled by digest, since a tag can be re-pushed. A local build installs
-  TensorFold at the release commit, not the tag. Either result must carry the right label, report 0.3.6.2, and
-  contain every patch.
+  TensorFold at the release commit, not the tag. Either result must carry the right label, report 0.6.1, and
+  contain the patch.
 - **Caches at the tools' defaults.** Upstream keeps compiled kernels in a recipe-private `~/.cache/tensorfold-qwen38`.
   Here triton's cache is `~/.triton` and torch's extension cache is `~/.cache/torch_extensions`, mounted at their
   in-container defaults and shared with the other recipes. The HF cache is mounted read-only.
 - **Host-side guards.** Upstream trusts TensorFold's admission alone. This adds a cgroup cap and a memory watchdog, as
   the repo's other self-budgeting recipe does.
+- **TensorFold's own memory reserve.** Upstream sets `TENSORFOLD_MEMORY_RESERVE_GIB=2` for its five streams. Here the
+  reserve stays TensorFold's default (12.2 GiB) unless a profile needs less, because the reserve is also the floor
+  the caches grow down to, and 2 GiB is under the watchdog's. See [Memory](#memory).
 - **Port 8011 and bridge networking.** Upstream uses `--network host` on 8888, which the vLLM recipe for this model
   already claims.
 - **Setup split out.** Upstream's `start.sh` runs its setup on demand. Here that is `build.sh` and `download.sh`, and
   `start.sh` runs `preflight.sh` before it stops or loads anything.
-- **Dropped:** the terminal banner, `publish-image.sh` (pushing to upstream's registry is upstream's job), and the
-  `.github` templates.
+- **Dropped:** the terminal banner, `publish-image.sh` (pushing to upstream's registry is upstream's job), the
+  `.github` templates, and `./.env` parsing (every knob is an environment variable here, as in the other recipes).
+- **Not ported yet: the language image.** Upstream's opt-in second image (`DRAFT_LANGUAGE`, patch
+  `languages/0010`) adds Chinese or Japanese tokens to what MTP may draft: +48% decode on Chinese, same output.
+  It is a 103k-line patch and a second image to pin; English and code get slightly slower with it.
 
 ## Known gaps
 
@@ -248,14 +278,16 @@ greedy, up to 149k tokens. Any request can send `"draft": false` for the serial 
   upstream reports the host keeping at least 9.7 GiB free through them.
 - **`int4x6` and `bf16x3` were not run here.** Their estimates are upstream's, and int4 KV quality is unmeasured
   anywhere.
-- **The image is a third party's.** It is pinned by digest and verified: the right label, TensorFold 0.3.6.2, and all
-  eight patches present. Once the patches are undone, the package matches the v0.3.6.2 source exactly. That was
-  checked once by hand, not on every build. `PULL=0 ./build.sh` builds the same image locally instead.
+- **The image is a third party's.** It is pinned by digest and verified: the right label, TensorFold 0.6.1, and the
+  patch present. Once the patch is undone, the package matches the v0.6.1 source (`17c73e1`) exactly, apart from
+  three READMEs the wheel does not ship. That was checked once by hand, on 2026-10-02, not on every build. `PULL=0 ./build.sh` builds the same image locally instead.
 - **No API key.** TensorFold serves without auth. Set `HOST=127.0.0.1` off a trusted network.
 
 ## License
 
-MIT, like upstream. [`LICENSE`](LICENSE) carries upstream's notice and TensorFold's, which covers the patches. The
+MIT, like upstream. [`LICENSE`](LICENSE) carries upstream's notice and TensorFold's NOTICE. TensorFold is
+Apache-2.0 from 0.6.0, and the patch carries lines of v0.6.1, so a copy of that license is in
+[`LICENSE.Apache-2.0`](LICENSE.Apache-2.0). The
 weights are not part of this repository and are under the Qwen Community License 1.0.
 
 The image is based on NVIDIA's PyTorch container, whose NVIDIA software is governed by the
@@ -268,7 +300,7 @@ The container prints them at every start; pulling or running it accepts them.
 The recipe is MiaAI Lab's ([@MiaAI_lab](https://x.com/MiaAI_lab)): the patches, the settings and every upstream
 measurement quoted here. It runs on [TensorFold](https://github.com/ashhart/TensorFold) by Ash Hart and its
 contributors, [Qwen3.8 Flash Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) by Qwen, and
-[Vontra's MLX 4-bit checkpoint](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP). Patch 0007 ports
-TensorFold #40 by MovieMaker93. Upstream's
+[Vontra's MLX 4-bit checkpoint](https://huggingface.co/Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP). The prefill-rows override
+ports TensorFold #40, and the `MAX_TOKENS` default upstream #11, both by [MovieMaker93](https://github.com/MovieMaker93). Upstream's
 [CREDITS.md](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold/blob/main/CREDITS.md) has the
 full list.

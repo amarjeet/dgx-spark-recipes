@@ -8,8 +8,8 @@
 # (scripts/prepare.sh, step 2), MIT. The Dockerfile is upstream's; the pull is
 # pinned by digest and the result is verified rather than trusted.
 #
-# Make IMAGE: TensorFold v0.3.6.2 with patches/*.patch applied, on NVIDIA's
-# PyTorch container.
+# Make IMAGE: TensorFold v0.6.1 with patches/*.patch applied, on NVIDIA's
+# PyTorch container, plus transformers and PyAV for image and video input.
 #
 #   ./build.sh            pull upstream's prebuilt image by digest (~11 GB) and
 #                         tag it as IMAGE; build locally if the pull fails
@@ -17,8 +17,8 @@
 #   ./build.sh --rebuild  build locally from scratch, no layer cache
 #
 # Either way the image is then verified: its tf.patches label must equal the
-# hash of patches/, TensorFold must report 0.3.6.2, and every patch must be
-# present in the installed package (a reverse dry-run applies cleanly).
+# hash of patches/, TensorFold must report 0.6.1, and every patch must be
+# present in the installed package (it reverse-applies cleanly).
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/profiles.sh"
@@ -72,11 +72,14 @@ else
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:26.07-py3
 FROM ${BASE_IMAGE}
 ARG TF_SPEC
-RUN pip install --no-cache-dir --upgrade "${TF_SPEC}" && tensorfold --version
+# transformers (the vision tower's modules) and PyAV (video decoding) for --vision
+RUN pip install --no-cache-dir --upgrade "${TF_SPEC}" && pip install --no-cache-dir "transformers==5.17.0" av && \
+    tensorfold --version
 COPY . /opt/tf-patches
 RUN cd "$(python -c 'import os, tensorfold; print(os.path.dirname(os.path.dirname(tensorfold.__file__)))')" && \
     for p in /opt/tf-patches/*.patch; do [ -e "$p" ] || continue; echo "applying $p"; patch -p0 --forward < "$p" || exit 1; done && \
-    python -c "import tensorfold.cuda.reply_text"
+    python -c "import tensorfold.cuda.server, tensorfold.vision.qwen_cuda, tensorfold.vision.videos, av; \
+from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel"
 ARG PATCHES_HASH
 LABEL tf.patches=${PATCHES_HASH}
 ENV HF_HOME=/root/.cache/huggingface \
@@ -104,8 +107,8 @@ else
 fi
 # The label only says what the builder claimed. Undoing the patches in reverse
 # order on a scratch copy of the package proves every one of them is in it.
-# Each must be undone on top of the later ones' undo, because later patches
-# rewrite lines earlier ones added (0004 edits a line of 0003's).
+# With more than one patch, each must be undone on top of the later ones'
+# undo, since a later patch may rewrite lines an earlier one added.
 if docker run --rm --entrypoint bash -v "${EXPERIMENT_DIR}/patches:/p:ro" "${IMAGE}" -c '
     site="$(python -c "import os, tensorfold; print(os.path.dirname(os.path.dirname(tensorfold.__file__)))")"
     mkdir -p /tmp/undo && cp -a "${site}/tensorfold" /tmp/undo/ && cd /tmp/undo

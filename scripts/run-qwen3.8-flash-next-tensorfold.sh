@@ -3,7 +3,8 @@
 # Thin launcher for recipes/Qwen3.8-Flash-Next-MLX4-TensorFold.
 #
 # start.sh runs preflight itself before anything is stopped or loaded: the
-# default profile budgets ~97.8 GiB of a 121.7 GiB unified pool, and on
+# default profile is admitted at ~85.4 GiB of a 121.7 GiB unified pool and
+# grows under traffic, and on
 # unified memory an over-commit hangs the kernel rather than raising an OOM.
 # It does not run build.sh or download.sh: an ~11 GB image pull and a 105 GiB
 # download should be started on purpose.
@@ -11,12 +12,12 @@
 # It sets no storage paths. The recipe's own defaults already point at each
 # tool's standard location -- see CONVENTIONS.md.
 #
-# Usage: run-qwen3.8-flash-next-tensorfold.sh [int8x4|int8x5|int4x6|bf16x3|int8x1]
+# Usage: run-qwen3.8-flash-next-tensorfold.sh [int8x5|int8x4|int4x6|bf16x3|int8x1]
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RECIPE_DIR="${REPO_ROOT}/recipes/Qwen3.8-Flash-Next-MLX4-TensorFold"
-PROFILE="${1:-int8x4}"
+PROFILE="${1:-int8x5}"
 
 [[ -d "${RECIPE_DIR}" ]] || {
   printf 'error: recipe not found: %s\n' "${RECIPE_DIR}" >&2
