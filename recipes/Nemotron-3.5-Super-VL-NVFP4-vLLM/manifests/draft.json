@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "repo": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4-LiLiCorr",
+  "revision": "7c7221aeb4cb3139307aa457f7dce11a8fb6ceb2",
+  "total_bytes": 1317977612,
+  "reserve_bytes": 10737418240,
+  "files": [
+    {
+      "path": ".gitattributes",
+      "bytes": 1609,
+      "sha256": "ab474714b5bc0079e53366ff6e9eac8cdc429fe4443fbc83b93a0686b24ea330",
+      "etag": "0626e981da5375a35004e67d5b4c6c8572ebee21",
+      "lfs": false
+    },
+    {
+      "path": "README.md",
+      "bytes": 15666,
+      "sha256": "41871d872e9f10a8eb339806a9779ae932b18cf13285bc3c8cabdbe2e08f26be",
+      "etag": "0890f7c1f680beff50cc60253cc0b2af9a99b4a0",
+      "lfs": false
+    },
+    {
+      "path": "config.json",
+      "bytes": 2182,
+      "sha256": "880d77cb17f6f45925ba78ba94a04b92b5a88b6046e7b6e376d2ab794b02ba04",
+      "etag": "7ec9439a8faa16087e42a6d0ddd8da2eae35db03",
+      "lfs": false
+    },
+    {
+      "path": "hf_quant_config.json",
+      "bytes": 5559,
+      "sha256": "ba3ff3838481e9ca9cf4a408f8368e510ac603660b3e26d2054043b8105896bc",
+      "etag": "946bf315ab78cdf51ce2c621c31a10a6868b5fa8",
+      "lfs": false
+    },
+    {
+      "path": "model.safetensors",
+      "bytes": 1317952596,
+      "sha256": "eec5efdf1b838020c2842f52d560c187515e84889c51f99d70b75c773c286599",
+      "etag": "eec5efdf1b838020c2842f52d560c187515e84889c51f99d70b75c773c286599",
+      "lfs": true
+    }
+  ]
+}
