@@ -1,5 +1,10 @@
 # Qwen3.8-Flash-Next · MLX 4-bit · TensorFold
 
+> **Superseded** by [`Qwen3.8-Flash-Next-FP4-TensorFold-Zig`](../Qwen3.8-Flash-Next-FP4-TensorFold-Zig/), which ports
+> upstream's newer Zig-engine recipe on NVIDIA's FP4 checkpoint. This recipe is kept as code. Its checkpoint and images
+> were removed from the host on 2026-10-18, so running it again means `./build.sh` and `./download.sh` first. Its
+> Clef-Flash co-tenant notes describe this recipe only.
+
 Serves [Qwen3.8 Flash Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) from one DGX Spark through an
 OpenAI-compatible API, with **five concurrent requests at the full 262,144-token window**, and image and video
 input. It runs [TensorFold](https://github.com/ashhart/TensorFold) v0.6.1 in NVIDIA's PyTorch container, with one
