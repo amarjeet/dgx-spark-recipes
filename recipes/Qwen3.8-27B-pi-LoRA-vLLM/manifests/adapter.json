@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "repo": "harness-hub/Qwen3.8-27B-pi-adapted",
+  "revision": "fedf3083b1bb63ec2928866c9ee507e16d78cb16",
+  "total_bytes": 659771680,
+  "reserve_bytes": 10737418240,
+  "files": [
+    {
+      "path": ".gitattributes",
+      "bytes": 1776,
+      "sha256": "a46c1de652afbe1bfa0eb061c79c7789eb244de9723a699ac5d84e947bf7e5cd",
+      "etag": "7dce5fee4125799e7c97b510e85a92a263e1b3e1",
+      "lfs": false
+    },
+    {
+      "path": "README.md",
+      "bytes": 12022,
+      "sha256": "bc860195ee8a4c720169649f11516f416daee22f2f9c754592f38ea927976de2",
+      "etag": "435158dad5aec10d0010f8fa466ac740e0e85f10",
+      "lfs": false
+    },
+    {
+      "path": "adapter_config.json",
+      "bytes": 1171,
+      "sha256": "bf046ce17e9cfb0651b1f64f0d1cf9d312c140aaaf03c2e8a3a35e846cd307db",
+      "etag": "cb1814360d6ee9549e6b34b532c5ad5c8856a237",
+      "lfs": false
+    },
+    {
+      "path": "adapter_model.safetensors",
+      "bytes": 637610624,
+      "sha256": "869b2a089882c0dac4683993f11081bd70edc30b32c64a988c688d6ac26b792a",
+      "etag": "869b2a089882c0dac4683993f11081bd70edc30b32c64a988c688d6ac26b792a",
+      "lfs": true
+    },
+    {
+      "path": "banner.png",
+      "bytes": 1073539,
+      "sha256": "64fa728eb2e618099ed0a4c4c10b988b64b3a228322fdad7e1ac1fd96172721c",
+      "etag": "64fa728eb2e618099ed0a4c4c10b988b64b3a228322fdad7e1ac1fd96172721c",
+      "lfs": true
+    },
+    {
+      "path": "card-pi.png",
+      "bytes": 88810,
+      "sha256": "166474609623d5cf4fbef7c2a40760d4eb5c20be250d31b1dbfc260d9ca1f937",
+      "etag": "aef604d695ebba018db1ecefbe63bd59a0ed5ac7",
+      "lfs": false
+    },
+    {
+      "path": "chat_template.jinja",
+      "bytes": 9004,
+      "sha256": "af16f654968d47d09a6c604e00370b12dbc21f76456f59c9e98b82e84d9f6375",
+      "etag": "9bd39df8984ba783a0b32cf2ebcd2117136e79ff",
+      "lfs": false
+    },
+    {
+      "path": "tokenizer.json",
+      "bytes": 19989339,
+      "sha256": "a5cd9732badce41de57e6efce8302930ded1c1188c5f81feb2bd6c24c4a1941f",
+      "etag": "a5cd9732badce41de57e6efce8302930ded1c1188c5f81feb2bd6c24c4a1941f",
+      "lfs": true
+    },
+    {
+      "path": "tokenizer_config.json",
+      "bytes": 2486,
+      "sha256": "910735dd1ca73120842a8b4a1cb254102d9d1a1ca48732ca92ced371c5ab9803",
+      "etag": "c23583c51714d887cd67b3b996e128c469fa996e",
+      "lfs": false
+    },
+    {
+      "path": "train-tool-calls.gif",
+      "bytes": 139700,
+      "sha256": "d7045da66e6860c815d7010f847ec50582ec28b961965517b16105b7459fabab",
+      "etag": "d7045da66e6860c815d7010f847ec50582ec28b961965517b16105b7459fabab",
+      "lfs": true
+    },
+    {
+      "path": "trajectory.gif",
+      "bytes": 679751,
+      "sha256": "0ce771bf9ccd0d30306016f5fff5dcbd4daf4d2a82d41d9b19f2f1e5b1376719",
+      "etag": "0ce771bf9ccd0d30306016f5fff5dcbd4daf4d2a82d41d9b19f2f1e5b1376719",
+      "lfs": true
+    },
+    {
+      "path": "trajectory.png",
+      "bytes": 163458,
+      "sha256": "0ab423ed347422c375e0123f9e387c204758af9761a1bfb777e83c0ea1e8bd75",
+      "etag": "0ab423ed347422c375e0123f9e387c204758af9761a1bfb777e83c0ea1e8bd75",
+      "lfs": true
+    }
+  ]
+}
