@@ -121,7 +121,7 @@ Two levers, both measured:
   roughly doubles decode, to 8.4 to 10.3 tok/s. The output distribution is
   unchanged.
 - **NVFP4 (`nvfp4`)** cuts the read to about 20 GiB. With MTP that gives
-  24 to 26 tok/s per stream and 56 tok/s across four. The cost is drift from
+  22 to 26 tok/s per stream and 56 to 73 tok/s across four. The cost is drift from
   the BF16 weights the adapter was trained on.
 
 For the card's numbers, use `pi` or `pi-mtp`. For daily use, `nvfp4`, once a
@@ -221,6 +221,14 @@ out of a maximum of 3, from vLLM's own spec-decode counters.
 | Adapter, code, temp 0.8, 1 stream | — | 9.59 (82%, len 2.64) | 24.20 (81%, len 2.62) |
 | Adapter, code, greedy, 1 stream | — | 10.29 (89%, len 2.78) | **25.75** (86%, len 2.72) |
 | Adapter, prose, 4 streams, total | 16.63 | 26.99 | **55.72** (19.88 per stream) |
+
+A re-measurement on 2026-11-19, about 2 hours into the same `nvfp4` server's
+life and after the agent eval, gave 21.35, 23.30 and 22.46 tok/s on three
+single-stream prose runs. Four streams ran at 20.09 tok/s each, **73.24 tok/s**
+in total. Per-stream speed matches the first run. The total moves more between
+measurements, because it is all four streams' tokens over the wall time of the
+slowest one, so read it as 56 to 73. Single-stream decode varies by a couple of
+tok/s with MTP acceptance.
 
 - **`pi-mtp`:** weights 51.52 GiB including the MTP layer. KV pool 488,821
   tokens, 1.86x at 262,144.
