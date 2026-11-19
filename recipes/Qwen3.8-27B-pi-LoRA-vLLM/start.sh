@@ -13,7 +13,7 @@
 # card's adapter id `harness-hub/Qwen3.8-27B-pi` does not exist and is replaced
 # by `-pi-adapted`; and the image is pinned by digest.
 #
-# Usage: ./start.sh [pi|pi-mtp|base]
+# Usage: ./start.sh [pi|pi-mtp|nvfp4|base]
 #        DRY_RUN=1 ./start.sh      # print the docker command and exit
 set -euo pipefail
 
@@ -79,7 +79,9 @@ if (( ENABLE_LORA )); then
   )
 fi
 if (( SPEC_TOKENS > 0 )); then
-  VLLM_ARGS+=(--speculative-config "{\"method\": \"qwen3_5_mtp\", \"num_speculative_tokens\": ${SPEC_TOKENS}}")
+  # "mtp": vLLM 0.26 resolves it to Qwen3_5MTP and logs the older
+  # "qwen3_5_mtp" name as deprecated.
+  VLLM_ARGS+=(--speculative-config "{\"method\": \"mtp\", \"num_speculative_tokens\": ${SPEC_TOKENS}}")
 fi
 
 if [[ "${DRY_RUN:-0}" == "1" ]]; then

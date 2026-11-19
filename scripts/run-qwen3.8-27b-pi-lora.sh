@@ -7,7 +7,7 @@
 # failing minutes into a cold load. It sets no storage paths -- the recipe's
 # own defaults already point at each tool's standard location (CONVENTIONS.md).
 #
-# Usage: run-qwen3.8-27b-pi-lora.sh [pi|pi-mtp|base]
+# Usage: run-qwen3.8-27b-pi-lora.sh [pi|pi-mtp|nvfp4|base]
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

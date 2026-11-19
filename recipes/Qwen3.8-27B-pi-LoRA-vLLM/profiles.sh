@@ -32,10 +32,20 @@ CONTAINER_HF_HOME="/root/.cache/huggingface"
 
 # --- checkpoints (pinned; see manifests/) ------------------------------------
 
-# The base: BF16, 55.6 GB including a vision tower and an MTP head. vLLM runs
-# with --language-model-only, so the vision tower is never loaded.
-MODEL_ID="Qwen/Qwen3.8-27B"
-MODEL_MANIFEST="${EXPERIMENT_DIR}/manifests/base.json"
+# The base, chosen per profile (select_profile sets MODEL_ID/MODEL_MANIFEST).
+# vLLM runs with --language-model-only, so a vision tower is never loaded.
+#   BF16:  the base the adapter was trained on. 55.6 GB including a vision
+#          tower and an MTP head.
+#   NVFP4: NVIDIA's ModelOpt MIXED_PRECISION export, 21.9 GB: NVFP4 MLPs and
+#          lm_head, FP8 attention and linear-attention projections, MTP head
+#          left in BF16. The LoRA stays unmerged on top of it, so the adapter's
+#          small deltas are applied in BF16 rather than rounded into 4 bits.
+BF16_MODEL_ID="Qwen/Qwen3.8-27B"
+BF16_MANIFEST="${EXPERIMENT_DIR}/manifests/base.json"
+NVFP4_MODEL_ID="nvidia/Qwen3.8-27B-NVFP4"
+NVFP4_MANIFEST="${EXPERIMENT_DIR}/manifests/base-nvfp4.json"
+MODEL_ID="${BF16_MODEL_ID}"
+MODEL_MANIFEST="${BF16_MANIFEST}"
 # The adapter: PEFT LoRA, r=32, alpha=64, F32, 638 MB. The model card's vLLM
 # command names `harness-hub/Qwen3.8-27B-pi`, which does not exist (HTTP 401
 # on 2026-11-18); this is the repo that does.
@@ -85,23 +95,34 @@ DEFAULT_PROFILE="pi"
 #            Serves both SERVED_MODEL_NAME (base) and LORA_NAME (adapter).
 #   pi-mtp   pi plus MTP speculative decoding from the base's own MTP head.
 #            Lossless, but the head was not trained with the adapter, so
-#            acceptance may be low. Not in the model card; unqualified.
-#   base     the base model alone, no LoRA: a baseline, and a way to isolate
+#            acceptance may be lower. Not in the model card.
+#   nvfp4    pi-mtp on the NVFP4 base (LoRA unmerged, MTP on). Reads ~20 GiB
+#            per token instead of ~51, so decode is faster; the adapter was
+#            trained against BF16 weights, so its behaviour may drift.
+#   base     the BF16 base alone, no LoRA: a baseline, and a way to isolate
 #            a failure to the adapter. Does not need the adapter downloaded.
+PROFILES="pi|pi-mtp|nvfp4|base"
 select_profile() {
   PROFILE="${1:-${DEFAULT_PROFILE}}"
   case "${PROFILE}" in
-    pi)     ENABLE_LORA=1; SPEC_TOKENS="${SPEC_TOKENS:-0}" ;;
-    pi-mtp) ENABLE_LORA=1; SPEC_TOKENS="${SPEC_TOKENS:-2}" ;;
-    base)   ENABLE_LORA=0; SPEC_TOKENS="${SPEC_TOKENS:-0}" ;;
+    pi)     ENABLE_LORA=1; SPEC_TOKENS="${SPEC_TOKENS:-0}"; BASE_FORMAT=bf16 ;;
+    pi-mtp) ENABLE_LORA=1; SPEC_TOKENS="${SPEC_TOKENS:-2}"; BASE_FORMAT=bf16 ;;
+    nvfp4)  ENABLE_LORA=1; SPEC_TOKENS="${SPEC_TOKENS:-2}"; BASE_FORMAT=nvfp4 ;;
+    base)   ENABLE_LORA=0; SPEC_TOKENS="${SPEC_TOKENS:-0}"; BASE_FORMAT=bf16 ;;
     *)
-      printf 'error: unknown profile %q (pi|pi-mtp|base)\n' "${PROFILE}" >&2
+      printf 'error: unknown profile %q (%s)\n' "${PROFILE}" "${PROFILES}" >&2
       return 1
       ;;
   esac
+  if [[ "${BASE_FORMAT}" == nvfp4 ]]; then
+    MODEL_ID="${NVFP4_MODEL_ID}"; MODEL_MANIFEST="${NVFP4_MANIFEST}"
+  else
+    MODEL_ID="${BF16_MODEL_ID}"; MODEL_MANIFEST="${BF16_MANIFEST}"
+  fi
   MAX_NUM_SEQS="${MAX_NUM_SEQS:-4}"
   MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-8192}"
-  export PROFILE ENABLE_LORA SPEC_TOKENS MAX_NUM_SEQS MAX_NUM_BATCHED_TOKENS
+  export PROFILE ENABLE_LORA SPEC_TOKENS BASE_FORMAT MODEL_ID MODEL_MANIFEST \
+    MAX_NUM_SEQS MAX_NUM_BATCHED_TOKENS
 }
 
 # --- shared helpers ----------------------------------------------------------

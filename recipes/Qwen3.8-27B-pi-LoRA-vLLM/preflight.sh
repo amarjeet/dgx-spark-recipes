@@ -12,7 +12,7 @@
 # be what start.sh and vLLM's weight mapper expect, read from the safetensors
 # header on disk, so a re-published adapter fails here and not after a load.
 #
-# Usage: ./preflight.sh [pi|pi-mtp|base]
+# Usage: ./preflight.sh [pi|pi-mtp|nvfp4|base]
 set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/profiles.sh"
@@ -49,7 +49,8 @@ if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
     grep -q default_chat_template_kwargs entrypoints/openai/cli_args.py || m="$m default_chat_template_kwargs"
     grep -q "\"qwen3_xml\"" tool_parsers/__init__.py 2>/dev/null || m="$m qwen3_xml-parser"
     grep -q "Qwen3_5ForConditionalGeneration" model_executor/models/registry.py || m="$m Qwen3_5ForConditionalGeneration"
-    grep -q "qwen3_5_mtp" config/speculative.py || m="$m qwen3_5_mtp"
+    grep -q "\"mtp\"" config/speculative.py || m="$m mtp-method"
+    grep -q "\"MIXED_PRECISION\"" model_executor/layers/quantization/modelopt.py || m="$m modelopt-MIXED_PRECISION"
     grep -q "\"model.language_model.\": \"language_model.model.\"" model_executor/models/qwen3_vl.py || m="$m lora-weight-mapper"
     printf "MISSING%s\n" "$m"' 2>/dev/null || printf 'UNREADABLE')"
   version="$(sed -n 's/^VERSION //p' <<<"${report}")"
@@ -117,7 +118,7 @@ PYEOF
   else
     ok "LoRA, rank ${ADAPTER_RANK}, every tensor under model.language_model.layers.*"
   fi
-  [[ "${info}" == *"base=${MODEL_ID} "* ]] || warn "adapter's base_model_name_or_path is not ${MODEL_ID}"
+  [[ "${info}" == *"base=${BF16_MODEL_ID} "* ]] || warn "adapter's base_model_name_or_path is not ${BF16_MODEL_ID}, the base it was trained on"
 fi
 
 printf '\nmemory\n'
