@@ -22,6 +22,7 @@ docker pull vllm/vllm-openai@sha256:c2dc759f5984f69c1e2418c6af7c26eb756f5ed2a893
 ./start.sh [profile]          # serves on :8015, waits for /health, watches memory
 ./scripts/sanity.py chat      # two short chats: correctness, TTFT, decode tok/s
 ./scripts/sanity.py needle --tokens 200000
+./bench.sh [1,2,4,8] [1024]   # decode tok/s per stream and aggregate, results in OUT_DIR
 ./status.sh
 ./stop.sh
 ```
@@ -103,7 +104,7 @@ curl -s http://localhost:8015/v1/chat/completions -H 'Content-Type: application/
 `CONTAINER_NAME` (`inkling-2-mini`), `SERVED_MODEL_NAME`, `MAX_MODEL_LEN`, `GPU_MEMORY_UTILIZATION`
 (standard), `KV_GIB` (max tiers; step down by 4 for more OS headroom), `SPEC_TOKENS` (7, the only value the
 checkpoint accepts; 0 disables DSpark), `MEM_HEADROOM_BYTES`, `HOST_FLOOR_GIB`, `KILL_FLOOR_GIB`,
-`RESTART_POLICY`, and the storage variables in [CONVENTIONS.md](../../CONVENTIONS.md).
+`RESTART_POLICY`, `EFFORT` (for `bench.sh`, default `low`), and the storage variables in [CONVENTIONS.md](../../CONVENTIONS.md).
 
 ## Measurements
 
@@ -120,7 +121,26 @@ first start. Upstream's figures for the same tiers are in brackets.
 | Tool call | `get_weather({"city":"Atlanta"})` parsed | |
 | Needle, 199,985 tokens at 50% | | pass, TTFT 129.9 s (1,540 tok/s prefill; 1,693), decode 41.6 tok/s |
 
-Not measured here: the `max` tier, the ~1M needle, images, throughput under concurrency, and upstream's
+### Decode throughput
+
+`./bench.sh` on `max-fp8`, 2026-11-22 (`scripts/bench_tps.py`): natural-language and code prompts, each held to
+exactly 1,024 tokens (`min_tokens`) so the runs compare, `reasoning_effort: low`, after a warm-up request.
+Per-stream decode is completion tokens over the time after the first token; aggregate is all tokens over the whole
+span; acceptance length is the DSpark mean from vLLM's `/metrics`.
+
+| Concurrency | Per stream tok/s (min / mean / max) | Aggregate tok/s | TTFT | DSpark acceptance |
+|---|---|---|---|---|
+| 1 | 37.4 to 40.8 (two runs) | 37.1 to 40.4 | 0.2 s | 2.3 to 2.5 |
+| 2 | 33.2 / 42.6 / 51.9 | 62.5 | 1.9 s (first time at this width; 0.26 s on a re-run) | 3.1 |
+| 4 | 20.2 / 25.6 / 36.4 | 77.8 | 1.9 s (same) | 2.6 |
+| 8 | 15.8 / 19.5 / 32.3 | 125.3 | 0.4 s | 2.6 |
+
+Long free-form output accepts fewer drafts than upstream's short chats (2.3 to 2.5 against their 3.1 mean), so about
+40 tok/s is the realistic single-stream figure; the 72 to 74 tok/s in the sanity check is a 51-token arithmetic answer.
+The spread across streams is the prompt: code and structured text accept more drafts than prose. The `standard` tier
+was not benchmarked; decode should be close, since it is the same weights with a BF16 KV.
+
+Not measured here: the `max` tier, the ~1M needle, images, prefill apart from the 200K needle, and upstream's
 69-scenario eval (88.4 BF16 / 87.0 FP8; scorecards in the upstream repo).
 
 ## Credits and licenses
