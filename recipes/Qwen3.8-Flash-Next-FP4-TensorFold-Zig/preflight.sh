@@ -19,7 +19,7 @@ warn() { printf '  [WARN] %s\n' "$*"; }
 bad()  { printf '  [FAIL] %s\n' "$*"; fails=$(( fails + 1 )); }
 
 printf 'profile %s: %s x %s tokens, %s KV%s\n' "${PROFILE}" "${PARALLEL}" "${CONTEXT}" "${KV_DTYPE}" \
-  "$([[ "${VISION}" == 1 ]] && printf ', image/video input')"
+  "$([[ "${VISION}" == 1 ]] && printf ', image%s%s input' "$([[ "${VIDEO}" == 1 ]] && printf /video)" "$([[ "${PDF}" == 1 ]] && printf /PDF)")$([[ "${ABLIT}" == 1 ]] && printf ', ABLIT=1')"
 
 printf '\nhost\n'
 if require_aarch64 2>/dev/null; then ok "aarch64"; else bad "not aarch64 ($(uname -m))"; fi
@@ -36,8 +36,8 @@ if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
   label="$(image_patches_label)"
   [[ "${label}" == "${PATCHES_HASH}" ]] && ok "tf.patches ${label} matches patches/ and build.sh" \
     || bad "tf.patches is ${label:-missing}, the recipe hashes to ${PATCHES_HASH}: run ./build.sh"
-  [[ "$(image_label tf.kernels)" == present ]] && ok "AOT kernel set present" \
-    || bad "no tf.kernels label: run ./build.sh --rebuild"
+  [[ "$(image_label tf.kernels)" == embedded ]] && ok "kernels embedded (tf.kernels)" \
+    || bad "tf.kernels is $(image_label tf.kernels), not embedded: this is not a v1.2.7 image of this recipe, run ./build.sh"
   docker run --rm --network none --entrypoint test "${IMAGE}" -x /opt/tensorfold/native/bin/tensorfold-native \
     && ok "tensorfold-native" || bad "${IMAGE} has no tensorfold-native"
 else
@@ -50,6 +50,25 @@ if [[ -d "${SNAPSHOT_DIR}" ]]; then
   else bad "snapshot does not match the manifest: run ./download.sh (${out##*$'\n'})"; fi
 else
   bad "${SNAPSHOT_DIR} missing: run ./download.sh"
+fi
+if [[ "${ABLIT}" == 1 ]]; then
+  if [[ ! -f "${ABLIT_MANIFEST}" ]]; then
+    bad "ABLIT=1: no ${ABLIT_MANIFEST#${EXPERIMENT_DIR}/}; the sidecar is not pinned yet (README, ABLIT)"
+  elif [[ ! -d "${ABLIT_SNAPSHOT_DIR}" ]]; then
+    bad "ABLIT=1: the overlay's sidecar is not downloaded: run ./download.sh --ablit"
+  elif out="$(verify_snapshot "${ABLIT_MANIFEST}" "${ABLIT_SNAPSHOT_DIR}" 2>&1)"; then
+    ok "${ABLIT_ID##*/} @ ${ABLIT_REVISION:0:12}: ${out##*$'\n'}"
+  else
+    bad "ABLIT=1: the sidecar does not match its manifest: run ./download.sh --ablit (${out##*$'\n'})"
+  fi
+  if [[ -f "${ABLIT_VIEW_DIR}/model.safetensors.index.json" ]] \
+      && python3 -I "${EXPERIMENT_DIR}/scripts/ablit_view.py" "${SNAPSHOT_DIR}" \
+           "${ABLIT_SNAPSHOT_DIR}/${ABLIT_SIDECAR}" "${ABLIT_VIEW_DIR}" >/dev/null 2>&1; then
+    ok "ABLIT=1 view ${ABLIT_VIEW_DIR}"
+  else
+    bad "ABLIT=1: the grafted checkpoint folder ${ABLIT_VIEW_DIR} is missing or broken: run ./download.sh --ablit"
+  fi
+  warn "ABLIT=1 serves a model whose safety refusals were removed"
 fi
 
 printf '\nport and tenancy\n'

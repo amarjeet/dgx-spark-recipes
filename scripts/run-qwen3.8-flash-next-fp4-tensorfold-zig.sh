@@ -3,7 +3,7 @@
 # Thin launcher for recipes/Qwen3.8-Flash-Next-FP4-TensorFold-Zig.
 #
 # start.sh runs preflight itself before anything is stopped or loaded: a start
-# needs ~108 GiB of MemAvailable, and on unified memory an over-commit hangs the
+# needs ~107 GiB of MemAvailable, and on unified memory an over-commit hangs the
 # kernel rather than raising an OOM. It does not run build.sh or download.sh: an
 # image build and a 95 GiB download should be started on purpose.
 #
@@ -11,6 +11,7 @@
 # tool's standard location -- see CONVENTIONS.md.
 #
 # Usage: run-qwen3.8-flash-next-fp4-tensorfold-zig.sh [fp8x5|fp8x3|bf16x3|fp8x1]
+#        ABLIT=1, VIDEO=1, PDF=1 and the recipe's other knobs pass through the environment.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
