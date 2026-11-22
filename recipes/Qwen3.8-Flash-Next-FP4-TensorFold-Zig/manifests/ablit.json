@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "repo": "drowzeys/keys-Qwen3.8-Flash-Next-NVFP4-FP4-QAD-house-qsa-L3-47",
+  "revision": "c44f5b92ee3d307b82aab1c55f4cc4ae1d440344",
+  "quantization": "Keys house-qsa o_proj sidecar (MXFP8), 12 layers",
+  "total_bytes": 194645112,
+  "files": [
+    {
+      "path": "fp4-local/house-qsa-oproj-mxfp8-L3-47.safetensors",
+      "bytes": 194645112,
+      "blob": "4fa076198d6fdcb6c4bfb541f4c78ea64490f10ecc662e0e01e62e993020a343",
+      "sha256": "4fa076198d6fdcb6c4bfb541f4c78ea64490f10ecc662e0e01e62e993020a343"
+    }
+  ]
+}

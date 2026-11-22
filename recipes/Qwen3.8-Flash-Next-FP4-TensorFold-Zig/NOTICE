@@ -6,15 +6,15 @@ This project's own code, scripts and documentation are licensed under the MIT Li
 This project builds on third-party work that keeps its own license:
 
 TensorFold
-  https://github.com/ashhart/TensorFold (branch zig-flashnext)
+  https://github.com/ashhart/TensorFold (release v1.2.7, commit 93a2e93e)
   Copyright 2026 TensorFold contributors. Apache License, Version 2.0 from 0.6.0; code written before 0.6.0 keeps its
   MIT notice (below). TensorFold's NOTICE reads: "TensorFold / Copyright 2026 TensorFold contributors /
   https://github.com/ashhart/TensorFold".
   build.sh builds TensorFold's Zig engine (tensorfold-native) from TensorFold's source at the commit pinned
   in profiles.sh; the image carries that build in /opt/tensorfold and TensorFold's LICENSE, LICENSES/, NOTICE and
   THIRD_PARTY_NOTICES.md in /opt/tensorfold/share/doc/tensorfold. The files in patches/ modify TensorFold's source and
-  are applied to it with git apply before the build. The changes in patches/ are this project's work under the MIT
-  License; the TensorFold code they modify, and quote as diff context, stays under TensorFold's licenses: Apache-2.0,
+  are applied to it with git apply before the build. The changes in patches/ (0001 to 0005) are this project's work,
+  by MiaAI-Lab and, for 0005, chai-md, listed one by one in CREDITS.md, under the MIT License; the TensorFold code they modify, and quote as diff context, stays under TensorFold's licenses: Apache-2.0,
   and for code written before 0.6.0 also its MIT notice (TensorFold's LICENSES/MIT.txt), so keep TensorFold's NOTICE
   and this copyright and permission notice with any copy of a patched tree:
 
@@ -50,11 +50,44 @@ Zig
   The image build downloads Zig 0.17.0 (zig-aarch64-linux-0.17.0.tar.xz, checked against its sha256) to compile
   TensorFold's Zig engine; the compiler is used in the build stage only and is not part of the published image.
 
+xgrammar and dlpack (inside libtfgrammar.so)
+  https://github.com/mlc-ai/xgrammar (MLC-AI team), https://github.com/dmlc/dlpack (DLPack contributors). Apache License, Version 2.0.
+  build.sh copies the prebuilt lib/libtfgrammar.so out of TensorFold's v1.2.7 release archive (aarch64, checked against its
+  SHA-256 in profiles.sh) into /opt/tensorfold/native/lib, with the archive's xgrammar and dlpack license and notice files in
+  /opt/tensorfold/share/doc/tensorfold/LICENSES-grammar. The library serves structured output and required tool calls; nothing of it is
+  modified or compiled here.
+
+PDFium (inside libpdfium.so, PDF document parts)
+  https://pdfium.googlesource.com/pdfium (PDFium authors) and https://pypdfium2.readthedocs.io (pypdfium2, pypdfium2
+  contributors). BSD-3-Clause, with the licenses of the third-party code the build was made from (freetype, lcms,
+  libjpeg-turbo, libpng, agg23, icu, abseil-cpp, fast_float, simdutf, zlib, llvm-libc and others) beside it.
+  build.sh downloads the pinned pypdfium2 aarch64 wheel (checked against the SHA-256 in profiles.sh),
+  copies pypdfium2_raw/libpdfium.so into /opt/tensorfold/lib (the server loads it through TENSORFOLD_LIBPDFIUM) and the
+  wheel's licenses/ tree into /opt/tensorfold/share/doc/tensorfold/LICENSES-pdfium. Nothing of it is modified or
+  compiled here, and it is read only when the server runs with --vision --vision-pdf (PDF=1 in profiles.sh).
+
+FFmpeg (linked into libtfvideo.so, video input)
+  https://ffmpeg.org/ (the FFmpeg developers). GNU LGPL version 2.1 (this build enables no GPL or version3 component), from the
+  release TensorFold pins, 9.0.2, whose source tarball build.sh downloads and checks against the SHA-256 pinned in
+  profiles.sh. TensorFold's own tools/zig/build_ffmpeg.sh configures it static and PIC, --disable-programs,
+  --disable-shared, --disable-network and --disable-everything with only the H.264, HEVC, VP8, VP9 and MPEG-4 decoders and the
+  MP4/MOV and Matroska/WebM demuxers; `zig build video` then links those archives into libtfvideo.so from TensorFold's
+  zig/src/video/tf_video.c. The library is installed in /opt/tensorfold/libexec/tfvideo, off the paths the server probes for
+  it: only VIDEO=1 puts that directory on the loader's path.
+  Nothing of FFmpeg is modified here. FFmpeg's COPYING.LGPLv2.1 and LICENSE.md are in /opt/tensorfold/share/doc/ffmpeg with the
+  static archives the link used (/opt/tensorfold/share/doc/ffmpeg/objects, LGPL-2.1 section 3a/6: relinking against a modified
+  FFmpeg needs them), and the unmodified FFmpeg source and TensorFold's build script are in the TensorFold checkout's licenses
+  and tools/zig/ respectively.
+
 Model files (downloaded from Hugging Face by download.sh; not included in this repository or its image)
   The checkpoint this recipe serves by default, nvidia/Qwen3.8-Flash-Next-FP4-Local, is NVIDIA's quantization-aware-distilled
   FP4 export (NVIDIA Model Optimizer) of Qwen/Qwen3.8-Flash-Next by the Qwen team (Alibaba). Its use is governed by the NVIDIA Open
   Model Agreement (https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-agreement/); the base model is under the
   Qwen Community License 1.0 (https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE).
+  The optional overlay (ABLIT=1), drowzeys/keys-Qwen3.8-Flash-Next-NVFP4-FP4-QAD-house-qsa-L3-47 by drowzeys, replaces 24
+  self_attn.o_proj tensors (weight and scale of 12 layers) of the checkpoint above; it is gated (Responsible Use Agreement) and
+  inherits the NVIDIA Open Model License and the Qwen Community License 1.0. download.sh --ablit downloads its sidecar; none of its
+  files is part of this repository or its image.
   Upstream's optional INT4 checkpoint, which this recipe does not carry, azampatti/Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound, is by azampatti (the
   top-5 expert cut and the shared-expert healing), built on Intel's AutoRound int4 quantization
   (Intel/Qwen3.8-Flash-Next-W4A16-AutoRound) and on Saren-Arterius's hybrid checkpoint and FP8 n-gram table
@@ -68,9 +101,7 @@ Third-party software in the image
   Product-Specific Terms for NVIDIA AI Products
   (https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/), which the
   container prints at every start; by pulling or running the image you accept them. The image also contains
-  huggingface_hub (Apache 2.0, for the checkpoint download), and for the vision helper Hugging Face transformers
-  (Apache 2.0), PyAV (BSD-3-Clause) with its bundled FFmpeg libraries (LGPL), Pillow, and TensorFold's Python source
-  (under TensorFold's licenses, above). This project's MIT License covers its own work only, not the software in the
-  image.
+  libjpeg-turbo (IJG/BSD-3-Clause-like) and libwebp's decoder (BSD-3-Clause), built from pinned sources, and the
+  libraries listed above. This project's MIT License covers its own work only, not the software in the image.
 
 See CREDITS.md for everyone this project builds on.

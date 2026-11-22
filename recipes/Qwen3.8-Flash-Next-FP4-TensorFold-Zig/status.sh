@@ -33,6 +33,11 @@ else
 fi
 if container_running; then
   docker logs "${CONTAINER_NAME}" 2>&1 | grep -iE 'pool|slots|sequence|window' | tail -2 | sed 's/^/server     : /' || true
+  if docker inspect -f '{{join .Args " "}}' "${CONTAINER_NAME}" 2>/dev/null | grep -q '/tensorfold-qwen38/ablit-'; then
+    printf 'weights    : ABLIT=1, %s grafted in (safety refusals removed)\n' "${ABLIT_ID}"
+  else
+    printf 'weights    : stock %s\n' "${MODEL_ID}"
+  fi
   cg="$(docker stats --no-stream --format '{{.MemUsage}}' "${CONTAINER_NAME}" 2>/dev/null || true)"
   [[ -n "${cg}" ]] && printf 'cgroup     : %s (host side only; GPU allocations are not charged)\n' "${cg}"
 fi

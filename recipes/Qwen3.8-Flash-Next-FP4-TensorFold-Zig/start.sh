@@ -5,7 +5,7 @@
 # Copyright (c) 2026 amarjeet (port)
 #
 # Derived from MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold
-# (start.sh), MIT. Setup moved to build.sh / download.sh, checks to
+# (start.sh) at b956dba, MIT. Setup moved to build.sh / download.sh, checks to
 # preflight.sh; adds a pinned snapshot, a host-side cgroup cap, a memory
 # watchdog and bridge networking.
 #
@@ -14,13 +14,14 @@
 #
 #   ./start.sh [restart] [profile] [--no-launch]
 #
-#   ./start.sh                  fp8x5: 5 streams x 262,144 tokens, fp8 KV, image/video input
+#   ./start.sh                  fp8x5: 5 streams x 262,144 tokens, fp8 KV, image input
 #   ./start.sh fp8x3            3 streams
 #   ./start.sh bf16x3           3 streams with the exact bf16 cache
 #   ./start.sh restart          replace the running server (checks pass first)
 #   ./start.sh --no-launch      print the docker command, start nothing
-#   PARALLEL=8 CONTEXT=131072 ./start.sh
-#   CONTEXT=1048576 ./start.sh  past 262,144 the engine applies YaRN x4
+#   PARALLEL=8 CONTEXT=131072 ./start.sh   (262,144 is the maximum window)
+#   VIDEO=1 PDF=1 ./start.sh    also video parts and PDF document parts
+#   ABLIT=1 ./start.sh          the Keys house-qsa abliteration overlay (./download.sh --ablit first)
 #   EXTRA_SERVE_ARGS='--no-drafts' ./start.sh restart
 #
 # If the server is already running, ./start.sh says so and leaves it alone.
@@ -36,7 +37,7 @@ for arg in "$@"; do
   case "${arg}" in
     restart) MODE=restart ;;
     --no-launch) DO_LAUNCH=0 ;;
-    -h|--help) sed -n '12,26p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help) sed -n '/^# Serve Qwen/,/^[^#]/{/^#/p}' "$0" | sed 's/^# \?//'; exit 0 ;;
     -*) printf 'unknown option: %s (try --help)\n' "${arg}" >&2; exit 2 ;;
     *) PROFILE_ARG="${arg}" ;;
   esac
@@ -57,7 +58,7 @@ if [[ "${MODE}" == start ]] && container_running; then
   exit 0
 fi
 
-mkdir -p "${OUT_DIR}/logs" "${CUDA_CACHE_HOST}" "${TRITON_CACHE_HOST}" "${TENSORFOLD_CACHE_HOST}"
+mkdir -p "${OUT_DIR}/logs" "${CUDA_CACHE_HOST}" "${TENSORFOLD_CACHE_HOST}"
 
 DOCKER_ARGS=(
   -d --name "${CONTAINER_NAME}"
@@ -67,28 +68,32 @@ DOCKER_ARGS=(
   --ulimit memlock=-1 --ulimit stack=67108864
   # Host-side cap. GPU allocations are not charged to it on GB10.
   --memory "${CONTAINER_MEM_GIB}g" --memory-swap "${CONTAINER_MEM_GIB}g"
-  -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1
-  -e "TENSORFOLD_CUDA_KERNELS=${KERNELS_PATH}"
-  # Read-only: serving reads the snapshot and writes nothing into the HF cache.
+  -e HF_HUB_OFFLINE=1
+  # Read-only: serving reads the snapshot (or the ABLIT=1 view, which links
+  # into it) and writes nothing into the HF cache.
   -v "${HF_HOME}:/root/.cache/huggingface:ro"
   -v "${CUDA_CACHE_HOST}:/root/.nv"
-  -v "${TRITON_CACHE_HOST}:/root/.triton"
   -v "${TENSORFOLD_CACHE_HOST}:/root/.cache/tensorfold"
 )
 # Every TENSORFOLD_* and TF_FLASHNEXT_* variable reaches the engine, as upstream
 # does: profiles.sh sets this recipe's, the environment adds or overrides.
 # The API key goes by name only, so it never shows in a process listing.
 while IFS='=' read -r name _; do
-  [[ "${name}" == TENSORFOLD_API_KEY || "${name}" == TENSORFOLD_CUDA_KERNELS ]] && continue
+  [[ "${name}" == TENSORFOLD_API_KEY ]] && continue
   DOCKER_ARGS+=(-e "${name}=${!name}")
 done < <(env | grep -E '^(TENSORFOLD|TF_FLASHNEXT)_[A-Z0-9_]+=' || true)
 [[ -z "${TENSORFOLD_API_KEY:-}" ]] || { export TENSORFOLD_API_KEY; DOCKER_ARGS+=(-e TENSORFOLD_API_KEY); }
 
-CMD=(tensorfold-native serve "${SNAPSHOT_CTR}" "${SERVE_ARGS[@]}")
+# libtfvideo.so is in the image but off every path the server probes; VIDEO=1
+# puts its directory on the loader's path. The container's shell composes the
+# value, so what the NVIDIA runtime injected stays in front.
+CMD=()
+[[ "${VIDEO}" == 1 ]] && CMD=(sh -c 'export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/opt/tensorfold/libexec/tfvideo"; exec "$@"' tfvideo)
+CMD+=(tensorfold-native serve "${MODEL_CTR}" "${SERVE_ARGS[@]}")
 
-info "Profile ${PROFILE}: ${PARALLEL} x ${CONTEXT} tokens, ${KV_DTYPE} KV, MTP drafts $([[ "${DRAFTS}" == 1 ]] && printf '%s' "${TF_FLASHNEXT_DEPTH}" || printf off)$([[ "${VISION}" == 1 ]] && printf ', image/video input')$([[ "${TF_FLASHNEXT_YARN}" != 0 ]] && printf ', YaRN x%s' "${TF_FLASHNEXT_YARN}")"
+info "Profile ${PROFILE}: ${PARALLEL} x ${CONTEXT} tokens, ${KV_DTYPE} KV, MTP drafts $([[ "${DRAFTS}" == 1 ]] && printf '%s' "${TF_FLASHNEXT_DRAFTS}" || printf off)$([[ "${VISION}" == 1 ]] && printf ', image')$([[ "${VIDEO}" == 1 ]] && printf '/video')$([[ "${PDF}" == 1 ]] && printf '/PDF')$([[ "${VISION}" == 1 ]] && printf ' input')"
 info "Reserve ${TENSORFOLD_MEMORY_RESERVE_GIB} GiB (TENSORFOLD_MEMORY_RESERVE_GIB); a start needs ~$(mem_need_gib) GiB of MemAvailable"
-info "Model   ${MODEL_ID} @ ${MODEL_REVISION:0:12}"
+info "Model   ${MODEL_ID} @ ${MODEL_REVISION:0:12}$([[ "${ABLIT}" == 1 ]] && printf ' + %s @ %s (ABLIT=1: safety refusals removed)' "${ABLIT_ID}" "${ABLIT_REVISION:0:8}")"
 info "Image   ${IMAGE}"
 info "Listen  ${HOST}:${PORT}   model id ${SERVED_MODEL_NAME}${SERVED_ALIAS:+ (alias ${SERVED_ALIAS})}"
 
@@ -119,7 +124,7 @@ fi
 # --- launch + watchdog -------------------------------------------------------
 LOG_FILE="${OUT_DIR}/logs/${CONTAINER_NAME}.log"
 [[ -s "${LOG_FILE}" ]] && mv "${LOG_FILE}" "${OUT_DIR}/logs/${CONTAINER_NAME}-${archive_ts}-previous.log"
-log_event "launch ${PROFILE} parallel=${PARALLEL} context=${CONTEXT} kv=${KV_DTYPE} image=${IMAGE}" >"${LOG_FILE}"
+log_event "launch ${PROFILE} parallel=${PARALLEL} context=${CONTEXT} kv=${KV_DTYPE} ablit=${ABLIT} video=${VIDEO} pdf=${PDF} image=${IMAGE}" >"${LOG_FILE}"
 docker run "${DOCKER_ARGS[@]}" "${IMAGE}" "${CMD[@]}" >/dev/null
 printf '%s\n' "${PROFILE}" >"${OUT_DIR}/profile.active"
 okm "Container ${CONTAINER_NAME} started"

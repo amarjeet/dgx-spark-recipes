@@ -5,7 +5,7 @@
 # Copyright (c) 2026 amarjeet (port)
 #
 # Derived from MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold
-# (stop.sh), MIT. Also stops the watchdog and archives the container log.
+# (stop.sh) at b956dba, MIT. Also stops the watchdog and archives the container log.
 #
 # Stop the server and remove its container, freeing its memory. TensorFold
 # gets STOP_TIMEOUT seconds (default 30) to exit. Requests still running are
@@ -21,7 +21,8 @@ if ! container_exists; then
 fi
 if container_running; then
   busy="$(curl -s --max-time 3 "http://$(probe_host):${PORT}/health" 2>/dev/null |
-          python3 -c 'import json,sys; h = json.load(sys.stdin); print(h.get("running", h.get("requests_running", 0)))' 2>/dev/null || echo 0)"
+          python3 -c 'import json,sys; h = json.load(sys.stdin); n = h.get("running", h.get("requests_running", 0)); print(n if type(n) is int and n >= 0 else 0)' 2>/dev/null || echo 0)"
+  [[ "${busy}" =~ ^[0-9]+$ ]] || busy=0   # what /health answers is data: only a plain number reaches the arithmetic
   (( busy == 0 )) || printf 'warning: %s request(s) still running will be cut off\n' "${busy}"
   printf 'stopping %s (up to %ss)\n' "${CONTAINER_NAME}" "${STOP_TIMEOUT}"
   docker stop -t "${STOP_TIMEOUT}" "${CONTAINER_NAME}" >/dev/null
